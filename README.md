@@ -1,4 +1,13 @@
-# vinext-starter
+# Signal Depths
+
+An 8-bit browser dungeon crawler featuring hidden rooms, expressive weapons,
+equipment builds, audience challenges, and persistent local progression.
+
+## Play
+
+The game is deployed automatically to GitHub Pages whenever `main` changes.
+
+## Development
 
 A clean full-stack starter running on
 [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
@@ -8,13 +17,14 @@ Drizzle support.
 
 - Node.js `>=22.13.0`
 
-## Quick Start
-
 ```bash
 npm install
 npm run dev
 npm run build
 ```
+
+- `npm run build` validates the Sites/Cloudflare deployment.
+- `npm run build:pages` creates the static GitHub Pages version in `out/`.
 
 This starter does not use `wrangler.jsonc`.
 
