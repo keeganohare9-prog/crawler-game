@@ -996,6 +996,58 @@ function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: numb
   ctx.fillRect(enemy.x - barW / 2, barY, barW * (enemy.hp / enemy.maxHp), 4);
 }
 
+function drawWeaponModel(ctx: CanvasRenderingContext2D, weaponId: WeaponId, time = 0) {
+  const glint = Math.sin(time * 8) > .65;
+  ctx.fillStyle = "#51371f";
+  ctx.fillRect(6, -3, 11, 6);
+  ctx.fillStyle = "#f4d35e";
+  ctx.fillRect(14, -5, 5, 10);
+
+  if (weaponId === "cleaver") {
+    ctx.fillStyle = "#8b9a94"; ctx.fillRect(18, -5, 8, 10);
+    ctx.fillStyle = "#dce7e4";
+    ctx.beginPath(); ctx.moveTo(24, -10); ctx.lineTo(48, -8); ctx.lineTo(53, -2); ctx.lineTo(47, 9); ctx.lineTo(24, 7); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#5d6d67"; ctx.fillRect(25, 4, 23, 3); ctx.fillRect(43, -7, 6, 4);
+    ctx.fillStyle = glint ? "#fff" : "#f4d35e"; ctx.fillRect(30, -6, 13, 2);
+  } else if (weaponId === "spear") {
+    ctx.fillStyle = "#9a7650"; ctx.fillRect(17, -2, 43, 4);
+    ctx.fillStyle = "#65756f"; ctx.fillRect(27, -4, 4, 8); ctx.fillRect(43, -4, 4, 8);
+    ctx.fillStyle = "#dce7e4";
+    ctx.beginPath(); ctx.moveTo(58, -8); ctx.lineTo(74, 0); ctx.lineTo(58, 8); ctx.lineTo(62, 2); ctx.lineTo(54, 0); ctx.lineTo(62, -2); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#76c7dc"; ctx.fillRect(62, -2, 8, 4);
+    ctx.fillStyle = glint ? "#fff" : "#76c7dc"; ctx.fillRect(68, -5, 3, 3); ctx.fillRect(68, 3, 3, 3);
+  } else if (weaponId === "hammer") {
+    ctx.fillStyle = "#7b5a35"; ctx.fillRect(17, -3, 28, 6);
+    ctx.fillStyle = "#303936"; ctx.fillRect(36, -15, 22, 30);
+    ctx.fillStyle = "#687a73"; ctx.fillRect(39, -12, 16, 24);
+    ctx.fillStyle = "#17201d"; ctx.fillRect(42, -8, 10, 9);
+    ctx.fillStyle = glint ? "#fff3b0" : "#ff4d6d"; ctx.fillRect(44, -6, 6, 5);
+    ctx.fillStyle = "#f4d35e"; ctx.fillRect(42, 5, 10, 3);
+    ctx.fillStyle = "#9caaa5"; ctx.fillRect(32, -12, 4, 24); ctx.fillRect(58, -10, 5, 20);
+  } else if (weaponId === "twin-knives") {
+    ctx.fillStyle = "#ff8fab"; ctx.fillRect(16, -9, 5, 6); ctx.fillRect(16, 3, 5, 6);
+    ctx.fillStyle = "#dce7e4";
+    ctx.beginPath(); ctx.moveTo(20, -10); ctx.lineTo(45, -8); ctx.lineTo(52, -3); ctx.lineTo(20, -4); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(20, 4); ctx.lineTo(52, 3); ctx.lineTo(45, 8); ctx.lineTo(20, 10); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#8a5c78"; ctx.fillRect(28, -7, 12, 2); ctx.fillRect(28, 5, 12, 2);
+    ctx.fillStyle = glint ? "#fff" : "#ff8fab"; ctx.fillRect(44, -6, 5, 2); ctx.fillRect(44, 4, 5, 2);
+  } else if (weaponId === "shock-baton") {
+    ctx.fillStyle = "#243b40"; ctx.fillRect(17, -5, 34, 10);
+    ctx.fillStyle = "#76c7dc"; ctx.fillRect(20, -3, 8, 6); ctx.fillRect(33, -3, 7, 6); ctx.fillRect(45, -4, 8, 8);
+    ctx.fillStyle = "#d9f7ff"; ctx.fillRect(23, -2, 3, 4); ctx.fillRect(35, -2, 3, 4);
+    ctx.fillStyle = glint ? "#fff" : "#76c7dc";
+    ctx.fillRect(52, -9, 4, 7); ctx.fillRect(52, 2, 4, 7); ctx.fillRect(57, -3, 5, 6);
+  } else {
+    ctx.fillStyle = "#384743"; ctx.fillRect(15, -9, 38, 18);
+    ctx.fillStyle = "#687a73"; ctx.fillRect(19, -7, 30, 12);
+    ctx.fillStyle = "#1a211f"; ctx.fillRect(47, -5, 14, 10); ctx.fillRect(25, 8, 9, 10);
+    ctx.fillStyle = "#ff8a3d"; ctx.fillRect(22, -4, 17, 5);
+    ctx.fillStyle = "#f4d35e"; ctx.fillRect(25, -3, 10, 2);
+    ctx.fillStyle = "#a43e17"; ctx.fillRect(34, 5, 10, 7);
+    ctx.fillStyle = glint ? "#fff3b0" : "#ff4d6d"; ctx.fillRect(55, -3, 7, 6);
+  }
+}
+
 function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
   const p = game.player;
   const weapon = getWeapon(p.weaponId);
@@ -1055,32 +1107,7 @@ function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
   const swingProgress = p.attackFx > 0 ? 1 - p.attackFx / .2 : 1;
   const swingAngle = p.attackFx > 0 ? facingAngle - weapon.arcRadians * .65 + swingProgress * weapon.arcRadians * 1.3 : facingAngle + .18;
   ctx.rotate(swingAngle);
-  ctx.fillStyle = "#6b4d22";
-  ctx.fillRect(7, -3, 8, 6);
-  ctx.fillStyle = "#f4d35e";
-  ctx.fillRect(13, -5, 5, 10);
-  if (p.weaponId === "hammer") {
-    ctx.fillStyle = "#7c8b85"; ctx.fillRect(16, -3, 24, 6);
-    ctx.fillStyle = "#46514d"; ctx.fillRect(34, -11, 16, 22);
-    ctx.fillStyle = "#dce7e4"; ctx.fillRect(37, -8, 10, 4);
-  } else if (p.weaponId === "spear") {
-    ctx.fillStyle = "#9a7650"; ctx.fillRect(16, -2, 39, 4);
-    ctx.fillStyle = "#dce7e4"; ctx.beginPath(); ctx.moveTo(55, -7); ctx.lineTo(69, 0); ctx.lineTo(55, 7); ctx.fill();
-  } else if (p.weaponId === "twin-knives") {
-    ctx.fillStyle = "#dce7e4"; ctx.fillRect(17, -8, 21, 5); ctx.fillRect(17, 4, 21, 5);
-    ctx.fillStyle = "#fff"; ctx.fillRect(20, -7, 15, 2); ctx.fillRect(20, 5, 15, 2);
-  } else if (p.weaponId === "scrap-launcher") {
-    ctx.fillStyle = "#6d7974"; ctx.fillRect(16, -8, 31, 16);
-    ctx.fillStyle = "#ff8a3d"; ctx.fillRect(21, -5, 18, 5);
-    ctx.fillStyle = "#202725"; ctx.fillRect(43, -5, 10, 10); ctx.fillRect(24, 8, 8, 8);
-  } else {
-    const bladeLength = p.weaponId === "shock-baton" ? 29 : 24;
-    ctx.fillStyle = p.weaponId === "shock-baton" ? "#76c7dc" : "#dce7e4";
-    ctx.fillRect(18, -3, bladeLength, 6);
-    ctx.fillStyle = "#ffffff"; ctx.fillRect(21, -2, Math.max(10, bladeLength - 5), 2);
-    ctx.fillStyle = p.weaponId === "shock-baton" ? "#b9f6ff" : "#80918b";
-    ctx.fillRect(18 + bladeLength - 4, -4, 7, 8);
-  }
+  drawWeaponModel(ctx, p.weaponId, game.elapsed);
   ctx.restore();
 
   if (p.attackFx > 0) {
@@ -1091,20 +1118,26 @@ function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
       ctx.beginPath(); ctx.arc(48, 0, 30 * swingProgress, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = `rgba(255,243,176,${alpha})`; ctx.lineWidth = 5;
       ctx.beginPath(); ctx.arc(48, 0, 12 + 26 * swingProgress, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = `rgba(220,231,228,${alpha})`; ctx.fillRect(36, -23, 5, 5); ctx.fillRect(57, 17, 7, 4); ctx.fillRect(68, -12, 4, 7);
     } else if (p.weaponId === "spear") {
       ctx.strokeStyle = `rgba(255,255,255,${alpha})`; ctx.lineWidth = 5;
       ctx.beginPath(); ctx.moveTo(22, 0); ctx.lineTo(weapon.range * (.55 + swingProgress * .45), 0); ctx.stroke();
+      ctx.strokeStyle = `rgba(118,199,220,${alpha})`; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(weapon.range * .9, 0, 5 + swingProgress * 9, 0, Math.PI * 2); ctx.stroke();
     } else if (p.weaponId === "shock-baton") {
       ctx.strokeStyle = `rgba(118,199,220,${alpha})`; ctx.lineWidth = 3;
       ctx.beginPath(); ctx.moveTo(22, -5); ctx.lineTo(35, 5); ctx.lineTo(45, -7); ctx.lineTo(57, 3); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(33, 4); ctx.lineTo(43, 11); ctx.lineTo(52, 4); ctx.stroke();
     } else if (p.weaponId === "scrap-launcher") {
       ctx.fillStyle = `rgba(255,138,61,${alpha})`;
       ctx.beginPath(); ctx.moveTo(48, 0); ctx.lineTo(65, -10); ctx.lineTo(61, 0); ctx.lineTo(65, 10); ctx.fill();
+      ctx.fillStyle = `rgba(220,231,228,${alpha * .7})`; ctx.fillRect(20, -14, 7, 7); ctx.fillRect(10, -18, 5, 5);
     } else {
       ctx.strokeStyle = p.weaponId === "twin-knives" ? `rgba(255,143,171,${alpha})` : `rgba(255,243,176,${alpha})`;
       ctx.lineWidth = p.weaponId === "twin-knives" ? 3 : 6;
       ctx.beginPath(); ctx.arc(0, 0, Math.min(62, Math.max(32, weapon.range * .8)), -weapon.arcRadians / 2, weapon.arcRadians / 2); ctx.stroke();
       if (p.weaponId === "twin-knives") { ctx.beginPath(); ctx.arc(0, 0, 27, -weapon.arcRadians / 2 + .25, weapon.arcRadians / 2 - .25); ctx.stroke(); }
+      if (p.weaponId === "cleaver") { ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, 0, 47, -.65, .65); ctx.stroke(); }
     }
     ctx.restore();
   }
@@ -1301,10 +1334,10 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
     ctx.fillStyle = color;
     ctx.save();
     ctx.translate(drop.x, drop.y + bob);
+    ctx.scale(.72, .72);
     ctx.rotate(-.55);
-    ctx.fillRect(-17, -3, 34, 6);
-    ctx.fillStyle = "#fff3b0";
-    ctx.fillRect(8, -5, 9, 10);
+    ctx.translate(-28, 0);
+    drawWeaponModel(ctx, drop.weaponId, game.elapsed + drop.phase);
     ctx.restore();
     ctx.shadowBlur = 0;
     drawPixelText(ctx, weapon.name.toUpperCase(), drop.x, drop.y - 20 + bob, color, "center");
@@ -2519,7 +2552,7 @@ function GuideControl({ keys, title, copy }: { keys: string; title: string; copy
 }
 
 function GuideWeaponArt({ weapon }: { weapon: WeaponId }) {
-  return <div className={`guide-art weapon-art ${weapon}`} aria-hidden="true"><i /><b /><em /></div>;
+  return <div className={`guide-art weapon-art ${weapon}`} aria-hidden="true"><i /><b /><em /><span /></div>;
 }
 
 function GuideEnemyArt({ kind }: { kind: EnemyKind }) {

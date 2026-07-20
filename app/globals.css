@@ -337,19 +337,42 @@ footer { margin-top: 14px; padding-top: 12px; border-top: 1px solid #28322f; dis
 .weapon-tactic { display:block; margin-top:7px; color:#76c7dc; font-size:8px; line-height:1.4; font-weight:600; }
 .guide-art { position:relative; width:100%; height:100px; border:1px solid #303d38; background:radial-gradient(circle,#1d2c27,#0b100e 68%); overflow:hidden; }
 
-.weapon-art::before { content:""; position:absolute; left:23px; top:45px; width:66px; height:9px; background:#ddd7bd; border:3px solid #61716a; transform:rotate(-35deg); transform-origin:center; }
-.weapon-art::after { content:""; position:absolute; left:20px; top:67px; width:24px; height:8px; background:#9a572d; transform:rotate(-35deg); }
-.weapon-art i { position:absolute; left:12px; top:62px; width:38px; height:5px; background:var(--amber); transform:rotate(55deg); }
-.weapon-art.spear::before { width:82px; height:5px; left:13px; background:#d6dedb; }
-.weapon-art.spear i { left:72px; top:28px; width:27px; height:13px; background:var(--amber); clip-path:polygon(100% 50%,0 0,0 100%); transform:rotate(-35deg); }
-.weapon-art.hammer::before { width:58px; height:9px; left:20px; background:#805f39; }
-.weapon-art.hammer i { left:65px; top:22px; width:30px; height:34px; background:#7f8d87; transform:rotate(-35deg); box-shadow:inset 5px 0 #a9b5b0; }
-.weapon-art.twin-knives::before { width:45px; left:10px; box-shadow:32px 22px 0 #ddd7bd; }
-.weapon-art.twin-knives::after { box-shadow:32px 22px 0 #9a572d; }
-.weapon-art.shock-baton::before { background:#76c7dc; box-shadow:0 0 14px #76c7dc; }
-.weapon-art.shock-baton i { background:white; box-shadow:0 0 10px #76c7dc; }
-.weapon-art.scrap-launcher::before { width:73px; height:16px; background:#687a73; }
-.weapon-art.scrap-launcher i { left:62px; top:20px; width:28px; height:10px; background:var(--red); transform:rotate(-35deg); }
+.weapon-art::before,.weapon-art::after,.weapon-art i,.weapon-art b,.weapon-art em,.weapon-art span { content:""; position:absolute; display:block; font-style:normal; image-rendering:pixelated; }
+.weapon-art::after { left:18px; top:68px; width:29px; height:9px; background:#51371f; transform:rotate(-34deg); box-shadow:inset 6px 0 #8a6337; }
+.weapon-art i { left:35px; top:57px; width:20px; height:7px; background:#f4d35e; transform:rotate(-34deg); box-shadow:0 0 9px rgba(244,211,94,.4); }
+
+.weapon-art.cleaver::before { left:43px; top:27px; width:48px; height:37px; background:#dce7e4; clip-path:polygon(0 15%,78% 0,100% 23%,86% 88%,18% 100%,0 73%); transform:rotate(-34deg); box-shadow:inset 0 -8px #697a73; }
+.weapon-art.cleaver b { left:54px; top:34px; width:25px; height:4px; background:#fff; transform:rotate(-34deg); }
+.weapon-art.cleaver em { left:77px; top:25px; width:9px; height:8px; background:#4c5d56; transform:rotate(-34deg); }
+.weapon-art.cleaver span { left:48px; top:66px; width:34px; height:3px; background:#f4d35e; transform:rotate(-34deg); animation:weapon-glint 1.8s steps(2) infinite; }
+
+.weapon-art.spear::before { left:17px; top:49px; width:76px; height:6px; background:#9a7650; transform:rotate(-34deg); box-shadow:inset 0 2px #d6b06a; }
+.weapon-art.spear b { left:76px; top:18px; width:28px; height:21px; background:#dce7e4; clip-path:polygon(100% 50%,0 0,28% 40%,0 50%,28% 60%,0 100%); transform:rotate(-34deg); }
+.weapon-art.spear em { left:81px; top:26px; width:15px; height:5px; background:#76c7dc; transform:rotate(-34deg); box-shadow:0 0 11px #76c7dc; }
+.weapon-art.spear span { left:39px; top:42px; width:5px; height:13px; background:#65756f; transform:rotate(-34deg); box-shadow:24px -16px #65756f; }
+
+.weapon-art.hammer::before { left:19px; top:58px; width:65px; height:8px; background:#7b5a35; transform:rotate(-34deg); box-shadow:inset 0 3px #b58a53; }
+.weapon-art.hammer b { left:63px; top:20px; width:37px; height:42px; background:#687a73; border:5px solid #303936; transform:rotate(-34deg); box-shadow:inset 0 -8px #46514d; }
+.weapon-art.hammer em { left:74px; top:31px; width:18px; height:14px; background:#17201d; transform:rotate(-34deg); box-shadow:inset 5px 4px #ff4d6d,0 0 10px rgba(255,77,109,.4); }
+.weapon-art.hammer span { left:73px; top:51px; width:18px; height:4px; background:#f4d35e; transform:rotate(-34deg); }
+
+.weapon-art.twin-knives::before { left:18px; top:37px; width:69px; height:13px; background:#dce7e4; clip-path:polygon(0 25%,82% 0,100% 50%,82% 100%,0 75%); transform:rotate(-25deg); box-shadow:inset 0 -4px #8a5c78; }
+.weapon-art.twin-knives b { left:33px; top:60px; width:66px; height:12px; background:#dce7e4; clip-path:polygon(0 25%,82% 0,100% 50%,82% 100%,0 75%); transform:rotate(-45deg); box-shadow:inset 0 -4px #8a5c78; }
+.weapon-art.twin-knives em { left:20px; top:57px; width:17px; height:6px; background:#ff8fab; transform:rotate(-25deg); box-shadow:31px 17px #ff8fab,0 0 8px #ff8fab; }
+.weapon-art.twin-knives span { left:70px; top:22px; width:8px; height:4px; background:#fff; transform:rotate(-25deg); box-shadow:21px 32px #fff; animation:weapon-glint 1.2s steps(2) infinite; }
+
+.weapon-art.shock-baton::before { left:22px; top:47px; width:72px; height:14px; background:#243b40; transform:rotate(-34deg); box-shadow:inset 0 4px #45656b,inset 0 -4px #12282d; }
+.weapon-art.shock-baton b { left:37px; top:43px; width:13px; height:9px; background:#76c7dc; transform:rotate(-34deg); box-shadow:22px -15px #76c7dc,43px -29px #76c7dc,0 0 10px #76c7dc; }
+.weapon-art.shock-baton em { left:84px; top:15px; width:20px; height:26px; border:4px solid #76c7dc; border-left:0; transform:rotate(-34deg); box-shadow:0 0 13px #76c7dc; }
+.weapon-art.shock-baton span { left:55px; top:25px; width:29px; height:3px; background:#d9f7ff; transform:rotate(-6deg); box-shadow:13px 9px #d9f7ff,-9px 8px #d9f7ff; animation:weapon-spark .75s steps(2) infinite; }
+
+.weapon-art.scrap-launcher::before { left:20px; top:37px; width:76px; height:27px; background:#687a73; border:5px solid #384743; transform:rotate(-16deg); box-shadow:inset 0 7px #87958f,inset 0 -7px #27332f; }
+.weapon-art.scrap-launcher b { left:77px; top:30px; width:27px; height:17px; background:#1a211f; transform:rotate(-16deg); box-shadow:inset 7px 0 #ff4d6d; }
+.weapon-art.scrap-launcher em { left:44px; top:51px; width:23px; height:20px; background:#a43e17; border:4px solid #562514; transform:rotate(-16deg); }
+.weapon-art.scrap-launcher span { left:35px; top:42px; width:32px; height:7px; background:#ff8a3d; transform:rotate(-16deg); box-shadow:inset 8px 2px #f4d35e,0 0 10px rgba(255,138,61,.5); }
+
+@keyframes weapon-glint { 50% { background:#fff; filter:drop-shadow(0 0 5px #fff3b0); } }
+@keyframes weapon-spark { 50% { transform:rotate(-16deg) translate(5px,-3px); opacity:.45; } }
 
 .enemy-art::before,.enemy-art::after,.enemy-art i,.enemy-art b,.enemy-art em,.enemy-art span { content:""; position:absolute; display:block; font-style:normal; }
 .enemy-art.skitter::before { left:35px; top:38px; width:44px; height:30px; background:#4f9a4a; box-shadow:inset 0 8px #8bea72,inset 0 -7px #315b38; }
