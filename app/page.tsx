@@ -1,14 +1,23 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { generateFloor, type RoomKind } from "./game/floor";
+import { getWeapon, selectWeaponDrop, type WeaponId } from "./game/combat-content";
+import { AUDIENCE_DARES, RUN_UPGRADES, bossPhaseForHealth, chooseAudienceDares, chooseSafeRoomUpgrades, newlyEarnedUnlocks, sponsorRewardsCrossed, summarizeRun, type RunStats, type RunUpgradeId } from "./game/progression";
 
 const TILE = 32;
-const MAP_W = 24;
-const MAP_H = 16;
-const WIDTH = MAP_W * TILE;
-const HEIGHT = MAP_H * TILE;
+const ROOM_COLS = 4;
+const ROOM_ROWS = 3;
+const MAP_W = ROOM_COLS * 8;
+const MAP_H = ROOM_ROWS * 8;
+const WIDTH = 768;
+const HEIGHT = 512;
+const SAFE_X = 4.5 * TILE;
+const SAFE_Y = 4.5 * TILE;
+const EXIT_X = (MAP_W - 1.5) * TILE;
+const EXIT_Y = (MAP_H - 1.5) * TILE;
 
-type EnemyKind = "skitter" | "warden" | "spitter" | "boss";
+type EnemyKind = "skitter" | "warden" | "spitter" | "healer" | "mimic" | "volatile" | "boss";
 type Enemy = {
   id: number;
   kind: EnemyKind;
@@ -20,15 +29,18 @@ type Enemy = {
   damage: number;
   cooldown: number;
   flash: number;
+  windup: number;
+  elite: boolean;
 };
-type Projectile = { x: number; y: number; vx: number; vy: number; life: number; damage: number };
+type Projectile = { x: number; y: number; vx: number; vy: number; life: number; damage: number; owner?: "enemy" | "player"; pierce?: number };
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; size: number };
 type Pylon = { x: number; y: number; active: boolean };
 type Chest = { x: number; y: number; open: boolean };
 type ItemKind = "tonic" | "bomb" | "fury";
 type GroundItem = { id: number; kind: ItemKind; x: number; y: number; phase: number };
+type GroundWeapon = { id: number; weaponId: WeaponId; x: number; y: number; phase: number };
 type Trap = { x: number; y: number; phase: number };
-type Screen = "title" | "playing" | "paused" | "won" | "lost";
+type Screen = "title" | "playing" | "paused" | "upgrade" | "won" | "lost";
 type Game = {
   screen: Screen;
   player: {
@@ -49,6 +61,8 @@ type Game = {
     bombs: number;
     furyVials: number;
     furyTime: number;
+    weaponId: WeaponId;
+    ammo: number;
     moving: boolean;
     stepTimer: number;
   };
@@ -58,6 +72,7 @@ type Game = {
   pylons: Pylon[];
   chests: Chest[];
   groundItems: GroundItem[];
+  groundWeapons: GroundWeapon[];
   traps: Trap[];
   explored: Set<string>;
   time: number;
@@ -72,6 +87,24 @@ type Game = {
   nextId: number;
   shake: number;
   hitStop: number;
+  floorSeed: number;
+  roomKinds: RoomKind[];
+  roomStarted: boolean[];
+  roomCleared: boolean[];
+  roomTimers: number[];
+  currentRoomIndex: number;
+  upgrades: RunUpgradeId[];
+  upgradeChoices: RunUpgradeId[];
+  activeDareId: string;
+  dareProgress: number;
+  dareComplete: boolean;
+  damageTaken: number;
+  maxHype: number;
+  roomsCleared: number;
+  lastBossPhase: string;
+  resultsSaved: boolean;
+  newUnlocks: string[];
+  sponsorHypeChecked: number;
 };
 
 type Hud = {
@@ -87,6 +120,13 @@ type Hud = {
   bombs: number;
   furyVials: number;
   furyTime: number;
+  weaponName: string;
+  ammo: number;
+  roomKind: RoomKind;
+  roomsCleared: number;
+  dareName: string;
+  dareProgress: number;
+  dareTarget: number;
   message: string;
   objective: string;
 };
@@ -95,7 +135,7 @@ const initialHud: Hud = {
   hp: 100,
   maxHp: 100,
   stamina: 100,
-  time: 300,
+  time: 720,
   score: 0,
   hype: 1,
   rooms: 1,
@@ -104,28 +144,74 @@ const initialHud: Hud = {
   bombs: 0,
   furyVials: 0,
   furyTime: 0,
+  weaponName: "Signal Cleaver",
+  ammo: 0,
+  roomKind: "safe",
+  roomsCleared: 0,
+  dareName: "Personal Space Denied",
+  dareProgress: 0,
+  dareTarget: 5,
   message: "SIGNAL ACQUIRED // SUBJECT 404 ENTERS THE FLOOR",
   objective: "Activate 3 signal pylons",
 };
 
-const enemyStats: Record<EnemyKind, Omit<Enemy, "id" | "kind" | "x" | "y" | "cooldown" | "flash">> = {
+const enemyStats: Record<EnemyKind, Omit<Enemy, "id" | "kind" | "x" | "y" | "cooldown" | "flash" | "windup" | "elite">> = {
   skitter: { hp: 28, maxHp: 28, speed: 68, damage: 9 },
   warden: { hp: 65, maxHp: 65, speed: 39, damage: 16 },
   spitter: { hp: 34, maxHp: 34, speed: 48, damage: 8 },
+  healer: { hp: 42, maxHp: 42, speed: 43, damage: 5 },
+  mimic: { hp: 78, maxHp: 78, speed: 58, damage: 18 },
+  volatile: { hp: 36, maxHp: 36, speed: 56, damage: 24 },
   boss: { hp: 260, maxHp: 260, speed: 46, damage: 20 },
 };
 
-function makeGame(screen: Screen = "title"): Game {
+function makeGame(screen: Screen = "title", floorSeed = 40_413): Game {
+  const floor = generateFloor(floorSeed, { roomCount: ROOM_COLS * ROOM_ROWS });
+  const roomKinds = floor.rooms.map((room) => room.kind);
   let nextId = 1;
-  const enemy = (kind: EnemyKind, tx: number, ty: number): Enemy => ({
+  const enemy = (kind: EnemyKind, tx: number, ty: number, elite = false): Enemy => ({
     id: nextId++,
     kind,
     x: tx * TILE + TILE / 2,
     y: ty * TILE + TILE / 2,
     cooldown: Math.random() * 1.2,
     flash: 0,
+    windup: 0,
+    elite,
     ...enemyStats[kind],
   });
+
+  const enemies: Enemy[] = [];
+  const chests: Chest[] = [];
+  const traps: Trap[] = [];
+  roomKinds.forEach((kind, index) => {
+    const col = index % ROOM_COLS;
+    const row = Math.floor(index / ROOM_COLS);
+    const tx = col * 8;
+    const ty = row * 8;
+    if (kind === "ambush") enemies.push(enemy("skitter", tx + 3, ty + 3), enemy("skitter", tx + 6, ty + 5), enemy("spitter", tx + 5, ty + 2));
+    if (kind === "survival") enemies.push(enemy("skitter", tx + 2, ty + 5), enemy("skitter", tx + 6, ty + 2), enemy("warden", tx + 5, ty + 5));
+    if (kind === "elite") enemies.push(enemy("warden", tx + 4, ty + 4, true), enemy("healer", tx + 6, ty + 2));
+    if (kind === "broadcast") enemies.push(enemy("volatile", tx + 4, ty + 4), enemy("skitter", tx + 6, ty + 5));
+    if (kind === "puzzle") enemies.push(enemy("spitter", tx + 5, ty + 3));
+    if (kind === "treasure") enemies.push(enemy("mimic", tx + 5, ty + 5));
+    if (kind === "boss") enemies.push(enemy("boss", tx + 4, ty + 4, true));
+    if (["treasure", "elite", "broadcast"].includes(kind)) chests.push({ x: (tx + 2.5) * TILE, y: (ty + 5.5) * TILE, open: false });
+    if (kind === "trap") {
+      traps.push(
+        { x: (tx + 3.5) * TILE, y: (ty + 3.5) * TILE, phase: 0 },
+        { x: (tx + 4.5) * TILE, y: (ty + 3.5) * TILE, phase: .35 },
+        { x: (tx + 5.5) * TILE, y: (ty + 4.5) * TILE, phase: .7 },
+      );
+    }
+  });
+  const pylonRoomIndices = [2, 5, 8];
+  const pylons = pylonRoomIndices.map((index) => {
+    const col = index % ROOM_COLS;
+    const row = Math.floor(index / ROOM_COLS);
+    return { x: (col * 8 + 4.5) * TILE, y: (row * 8 + 4.5) * TILE, active: false };
+  });
+  const dare = chooseAudienceDares(floorSeed, [], 1)[0] ?? AUDIENCE_DARES[4];
 
   return {
     screen,
@@ -147,43 +233,21 @@ function makeGame(screen: Screen = "title"): Game {
       bombs: 0,
       furyVials: 0,
       furyTime: 0,
+      weaponId: "cleaver",
+      ammo: 0,
       moving: false,
       stepTimer: 0,
     },
-    enemies: [
-      enemy("skitter", 5, 5),
-      enemy("skitter", 11, 3),
-      enemy("spitter", 13, 5),
-      enemy("warden", 5, 11),
-      enemy("skitter", 6, 13),
-      enemy("spitter", 11, 12),
-      enemy("warden", 14, 12),
-      enemy("skitter", 18, 12),
-      enemy("spitter", 21, 11),
-      enemy("boss", 20, 4),
-    ],
+    enemies,
     projectiles: [],
     particles: [],
-    pylons: [
-      { x: 6.5 * TILE, y: 2.5 * TILE, active: false },
-      { x: 13.5 * TILE, y: 6.5 * TILE, active: false },
-      { x: 3.5 * TILE, y: 13.5 * TILE, active: false },
-    ],
-    chests: [
-      { x: 11.5 * TILE, y: 5.5 * TILE, open: false },
-      { x: 14.5 * TILE, y: 10.5 * TILE, open: false },
-      { x: 21.5 * TILE, y: 13.5 * TILE, open: false },
-    ],
+    pylons,
+    chests,
     groundItems: [],
-    traps: [
-      { x: 5.5 * TILE, y: 10.5 * TILE, phase: 0 },
-      { x: 6.5 * TILE, y: 10.5 * TILE, phase: 0.35 },
-      { x: 10.5 * TILE, y: 6.5 * TILE, phase: 0.7 },
-      { x: 18.5 * TILE, y: 11.5 * TILE, phase: 0.15 },
-      { x: 19.5 * TILE, y: 11.5 * TILE, phase: 0.5 },
-    ],
-    explored: new Set(["0,0"]),
-    time: 300,
+    groundWeapons: [],
+    traps,
+    explored: new Set(["0"]),
+    time: 720,
     score: 0,
     hype: 1,
     kills: 0,
@@ -195,13 +259,31 @@ function makeGame(screen: Screen = "title"): Game {
     nextId,
     shake: 0,
     hitStop: 0,
+    floorSeed,
+    roomKinds,
+    roomStarted: roomKinds.map((_, index) => index === 0),
+    roomCleared: roomKinds.map(() => false),
+    roomTimers: roomKinds.map(() => 0),
+    currentRoomIndex: 0,
+    upgrades: [],
+    upgradeChoices: [],
+    activeDareId: dare.id,
+    dareProgress: 0,
+    dareComplete: false,
+    damageTaken: 0,
+    maxHype: 1,
+    roomsCleared: 0,
+    lastBossPhase: "",
+    resultsSaved: false,
+    newUnlocks: [],
+    sponsorHypeChecked: 1,
   };
 }
 
 function isWallTile(tx: number, ty: number) {
   if (tx <= 0 || ty <= 0 || tx >= MAP_W - 1 || ty >= MAP_H - 1) return true;
-  if ((tx === 8 || tx === 16) && ty !== 4 && ty !== 12) return true;
-  if (ty === 8 && tx !== 4 && tx !== 12 && tx !== 20) return true;
+  if (tx % 8 === 0 && ty % 8 !== 4) return true;
+  if (ty % 8 === 0 && tx % 8 !== 4) return true;
   return false;
 }
 
@@ -221,9 +303,22 @@ function dist(a: { x: number; y: number }, b: { x: number; y: number }) {
 
 function roomFor(x: number, y: number) {
   return {
-    col: Math.max(0, Math.min(2, Math.floor(x / (8 * TILE)))),
-    row: Math.max(0, Math.min(1, Math.floor(y / (8 * TILE)))),
+    col: Math.max(0, Math.min(ROOM_COLS - 1, Math.floor(x / (8 * TILE)))),
+    row: Math.max(0, Math.min(ROOM_ROWS - 1, Math.floor(y / (8 * TILE)))),
   };
+}
+
+function roomIndexFor(x: number, y: number) {
+  const room = roomFor(x, y);
+  return room.row * ROOM_COLS + room.col;
+}
+
+function encounterLocks(kind: RoomKind) {
+  return ["ambush", "trap", "survival", "elite", "puzzle", "boss"].includes(kind);
+}
+
+function isRoomLocked(game: Game, roomIndex: number) {
+  return Boolean(game.roomStarted[roomIndex] && !game.roomCleared[roomIndex] && encounterLocks(game.roomKinds[roomIndex]));
 }
 
 function burst(game: Game, x: number, y: number, color: string, count: number, speed = 80) {
@@ -384,6 +479,24 @@ function renderGame(ctx: CanvasRenderingContext2D, game: Game) {
     drawPixelText(ctx, item.kind === "tonic" ? "1" : item.kind === "bomb" ? "2" : "3", item.x, item.y - 18 + bob, color, "center");
   });
 
+  game.groundWeapons.forEach((drop) => {
+    const bob = Math.sin(game.elapsed * 4 + drop.phase) * 3;
+    const weapon = getWeapon(drop.weaponId);
+    const color = weapon.rarity === "rare" ? "#a78bfa" : weapon.rarity === "uncommon" ? "#76c7dc" : "#f4d35e";
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = color;
+    ctx.save();
+    ctx.translate(drop.x, drop.y + bob);
+    ctx.rotate(-.55);
+    ctx.fillRect(-17, -3, 34, 6);
+    ctx.fillStyle = "#fff3b0";
+    ctx.fillRect(8, -5, 9, 10);
+    ctx.restore();
+    ctx.shadowBlur = 0;
+    drawPixelText(ctx, weapon.name.toUpperCase(), drop.x, drop.y - 20 + bob, color, "center");
+  });
+
   game.projectiles.forEach((shot) => {
     ctx.fillStyle = "#ff6b6b";
     ctx.fillRect(shot.x - 4, shot.y - 4, 8, 8);
@@ -539,6 +652,49 @@ function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: numb
     ctx.fillRect(-9, 1, 18, 5);
     ctx.fillStyle = "#513323";
     ctx.fillRect(13, -2 - arm, 7, 22);
+  } else if (enemy.kind === "healer") {
+    ctx.fillStyle = flash ? "#fff" : "#34d399";
+    ctx.fillRect(-11, -13, 22, 27);
+    ctx.fillStyle = "#d5fff0";
+    ctx.fillRect(-7, -17, 14, 8);
+    ctx.fillStyle = "#0b3b2b";
+    ctx.fillRect(-3, -12, 6, 18);
+    ctx.fillRect(-8, -6, 16, 6);
+    ctx.strokeStyle = "rgba(52,211,153,.6)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, 18 + Math.sin(t) * 3, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (enemy.kind === "mimic") {
+    const mouth = 5 + Math.abs(Math.sin(t)) * 8;
+    ctx.fillStyle = flash ? "#fff" : "#b7791f";
+    ctx.fillRect(-15, -13, 30, 26);
+    ctx.fillStyle = "#f4d35e";
+    ctx.fillRect(-13, -11, 26, 6);
+    ctx.fillStyle = "#260d0d";
+    ctx.fillRect(-12, 1, 24, mouth);
+    ctx.fillStyle = "#fff3b0";
+    for (let tooth = -9; tooth <= 9; tooth += 6) ctx.fillRect(tooth, 1, 3, 5);
+    ctx.fillStyle = "#ff4d6d";
+    ctx.fillRect(-7, -8, 5, 4);
+    ctx.fillRect(3, -8, 5, 4);
+  } else if (enemy.kind === "volatile") {
+    const pulse = 1 + Math.sin(t * 1.6) * .12;
+    ctx.scale(pulse, pulse);
+    ctx.fillStyle = flash ? "#fff" : "#ff8a3d";
+    ctx.beginPath();
+    ctx.arc(0, 0, 13, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#3b1208";
+    ctx.fillRect(-7, -4, 5, 5);
+    ctx.fillRect(3, -4, 5, 5);
+    ctx.fillStyle = "#f4d35e";
+    ctx.fillRect(-3, 4, 6, 5);
+    ctx.strokeStyle = "#ff4d6d";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, 17 + Math.sin(t * 2) * 3, 0, Math.PI * 2);
+    ctx.stroke();
   } else {
     const pulse = 1 + Math.sin(t) * .06;
     ctx.scale(pulse, pulse);
@@ -565,6 +721,13 @@ function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: numb
     ctx.fillStyle = "#f4d35e";
     ctx.fillRect(-5, -1, 10, 10);
   }
+  if (enemy.windup > 0) {
+    ctx.strokeStyle = enemy.kind === "volatile" ? "#ff4d6d" : "#fff3b0";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, (enemy.kind === "boss" ? 34 : 23) - enemy.windup * 5, 0, Math.PI * 2);
+    ctx.stroke();
+  }
   ctx.restore();
 
   const barW = enemy.kind === "boss" ? 46 : 28;
@@ -577,6 +740,7 @@ function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: numb
 
 function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
   const p = game.player;
+  const weapon = getWeapon(p.weaponId);
   const stride = p.moving ? Math.sin(game.elapsed * 13) : 0;
   const bob = p.moving ? Math.abs(stride) * -2 : Math.sin(game.elapsed * 3) * .5;
   const facingAngle = Math.atan2(p.dirY, p.dirX);
@@ -637,19 +801,20 @@ function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.fillRect(7, -3, 8, 6);
   ctx.fillStyle = "#f4d35e";
   ctx.fillRect(13, -5, 5, 10);
-  ctx.fillStyle = "#dce7e4";
-  ctx.fillRect(18, -3, 24, 6);
+  const bladeLength = p.weaponId === "spear" ? 36 : p.weaponId === "hammer" ? 20 : p.weaponId === "twin-knives" ? 15 : 24;
+  ctx.fillStyle = p.weaponId === "shock-baton" ? "#76c7dc" : "#dce7e4";
+  ctx.fillRect(18, -3, bladeLength, p.weaponId === "hammer" ? 9 : 6);
   ctx.fillStyle = "#ffffff";
-  ctx.fillRect(21, -2, 19, 2);
+  ctx.fillRect(21, -2, Math.max(10, bladeLength - 5), 2);
   ctx.fillStyle = "#80918b";
-  ctx.fillRect(38, -3, 6, 6);
+  ctx.fillRect(18 + bladeLength - 4, -3, p.weaponId === "hammer" ? 13 : 6, p.weaponId === "hammer" ? 13 : 6);
   ctx.restore();
 
   if (p.attackFx > 0) {
     ctx.strokeStyle = `rgba(255,243,176,${Math.min(1, p.attackFx * 6)})`;
     ctx.lineWidth = 6;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 38, facingAngle - 1.3, facingAngle + 1.2);
+    ctx.arc(p.x, p.y, Math.min(62, Math.max(32, weapon.range * .8)), facingAngle - weapon.arcRadians / 2, facingAngle + weapon.arcRadians / 2);
     ctx.stroke();
   }
 }
@@ -701,21 +866,23 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   // Bright threshold frames make every available passage readable at a glance.
   const roomLeft = current.col * 8 * TILE;
   const roomTop = current.row * 8 * TILE;
+  const currentRoomIndex = current.row * ROOM_COLS + current.col;
+  const roomLocked = isRoomLocked(game, currentRoomIndex);
   const doorY = roomTop + 4.5 * TILE;
   const doorX = roomLeft + 4.5 * TILE;
   const pulse = .72 + Math.sin(game.elapsed * 5) * .2;
   ctx.save();
-  ctx.shadowColor = "#f4d35e";
+  ctx.shadowColor = roomLocked ? "#ff4d6d" : "#f4d35e";
   ctx.shadowBlur = 10;
-  ctx.fillStyle = `rgba(244,211,94,${pulse})`;
-  ctx.strokeStyle = "#fff3b0";
+  ctx.fillStyle = roomLocked ? `rgba(255,77,109,${pulse})` : `rgba(244,211,94,${pulse})`;
+  ctx.strokeStyle = roomLocked ? "#ff8fab" : "#fff3b0";
   ctx.lineWidth = 2;
   if (current.col > 0) {
     ctx.fillRect(roomLeft + 2, doorY - 24, 7, 48);
     ctx.strokeRect(roomLeft + 1, doorY - 27, 13, 54);
     drawPixelText(ctx, "◀", roomLeft + 22, doorY + 4, "#fff3b0", "center");
   }
-  if (current.col < 2) {
+  if (current.col < ROOM_COLS - 1) {
     ctx.fillRect(roomLeft + 8 * TILE - 9, doorY - 24, 7, 48);
     ctx.strokeRect(roomLeft + 8 * TILE - 14, doorY - 27, 13, 54);
     drawPixelText(ctx, "▶", roomLeft + 8 * TILE - 22, doorY + 4, "#fff3b0", "center");
@@ -725,7 +892,7 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
     ctx.strokeRect(doorX - 27, roomTop + 1, 54, 13);
     drawPixelText(ctx, "▲", doorX, roomTop + 27, "#fff3b0", "center");
   }
-  if (current.row < 1) {
+  if (current.row < ROOM_ROWS - 1) {
     ctx.fillRect(doorX - 24, roomTop + 8 * TILE - 9, 48, 7);
     ctx.strokeRect(doorX - 27, roomTop + 8 * TILE - 14, 54, 13);
     drawPixelText(ctx, "▼", doorX, roomTop + 8 * TILE - 20, "#fff3b0", "center");
@@ -737,10 +904,10 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.strokeStyle = "#2c4a40";
   ctx.lineWidth = 2;
   ctx.strokeRect(centerX - 46, centerY - 46, 92, 92);
-  drawPixelText(ctx, `SIGNAL ROOM 0${roomNumber}`, centerX, centerY - 51, "#5a8876", "center");
+  drawPixelText(ctx, `ROOM ${String(roomNumber).padStart(2, "0")} // ${game.roomKinds[currentRoomIndex].toUpperCase()}`, centerX, centerY - 51, roomLocked ? "#ff8fab" : "#5a8876", "center");
 
-  const safeX = 12.5 * TILE;
-  const safeY = 12.5 * TILE;
+  const safeX = SAFE_X;
+  const safeY = SAFE_Y;
   ctx.fillStyle = game.safeUsed ? "#29433c" : "#34d399";
   ctx.fillRect(safeX - 20, safeY - 20, 40, 40);
   ctx.fillStyle = "#0b1713";
@@ -749,10 +916,10 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
 
   const gateOpen = game.bossDead;
   ctx.fillStyle = gateOpen ? "#34d399" : "#ef4444";
-  ctx.fillRect(22 * TILE + 3, 14 * TILE + 3, 26, 26);
+  ctx.fillRect(EXIT_X - 13, EXIT_Y - 13, 26, 26);
   ctx.fillStyle = "#06100c";
-  ctx.fillRect(22 * TILE + 10, 14 * TILE + 8, 12, 18);
-  if (!gateOpen) ctx.fillRect(22 * TILE + 5, 14 * TILE + 13, 22, 5);
+  ctx.fillRect(EXIT_X - 6, EXIT_Y - 8, 12, 18);
+  if (!gateOpen) ctx.fillRect(EXIT_X - 11, EXIT_Y - 3, 22, 5);
 
   game.traps.forEach((trap) => {
     const active = (game.elapsed + trap.phase) % 1.5 < .72;
@@ -823,6 +990,24 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
     drawPixelText(ctx, item.kind === "tonic" ? "1" : item.kind === "bomb" ? "2" : "3", item.x, item.y - 18 + bob, color, "center");
   });
 
+  game.groundWeapons.forEach((drop) => {
+    const bob = Math.sin(game.elapsed * 4 + drop.phase) * 3;
+    const weapon = getWeapon(drop.weaponId);
+    const color = weapon.rarity === "rare" ? "#a78bfa" : weapon.rarity === "uncommon" ? "#76c7dc" : "#f4d35e";
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = color;
+    ctx.save();
+    ctx.translate(drop.x, drop.y + bob);
+    ctx.rotate(-.55);
+    ctx.fillRect(-17, -3, 34, 6);
+    ctx.fillStyle = "#fff3b0";
+    ctx.fillRect(8, -5, 9, 10);
+    ctx.restore();
+    ctx.shadowBlur = 0;
+    drawPixelText(ctx, weapon.name.toUpperCase(), drop.x, drop.y - 20 + bob, color, "center");
+  });
+
   game.projectiles.forEach((shot) => {
     ctx.fillStyle = "rgba(255,77,109,.28)";
     ctx.fillRect(shot.x - 8, shot.y - 8, 16, 16);
@@ -855,10 +1040,12 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   const p = game.player;
   let prompt = "";
   const nearbyItem = game.groundItems.find((item) => dist(item, p) < 38);
-  if (nearbyItem) prompt = `[F] PICK UP ${nearbyItem.kind.toUpperCase()}`;
+  const nearbyWeapon = game.groundWeapons.find((drop) => dist(drop, p) < 42);
+  if (nearbyWeapon) prompt = `[F] EQUIP ${getWeapon(nearbyWeapon.weaponId).name.toUpperCase()}`;
+  else if (nearbyItem) prompt = `[F] PICK UP ${nearbyItem.kind.toUpperCase()}`;
   else if (game.pylons.some((x) => !x.active && dist(x, p) < 42)) prompt = "[F] JACK IN";
   else if (game.chests.some((x) => !x.open && dist(x, p) < 42)) prompt = "[F] CRACK CACHE";
-  else if (gateOpen && Math.hypot(p.x - 22.5 * TILE, p.y - 14.5 * TILE) < 44) prompt = "[F] EXIT FLOOR";
+  else if (gateOpen && Math.hypot(p.x - EXIT_X, p.y - EXIT_Y) < 44) prompt = "[F] EXIT FLOOR";
   if (prompt) drawPixelText(ctx, prompt, p.x, p.y - 34, "#fff3b0", "center");
   ctx.restore();
 
@@ -908,7 +1095,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
   p.invuln = Math.max(0, p.invuln - dt);
   p.stepTimer = Math.max(0, p.stepTimer - dt);
   p.furyTime = Math.max(0, p.furyTime - dt);
-  p.stamina = Math.min(100, p.stamina + dt * 24);
+  p.stamina = Math.min(100, p.stamina + dt * 24 * (game.upgrades.includes("second_wind") ? 1.2 : 1));
 
   game.particles = game.particles.filter((particle) => {
     particle.life -= dt;
@@ -917,6 +1104,25 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     particle.vx *= .93;
     particle.vy *= .93;
     return particle.life > 0;
+  });
+
+  const sponsorRewards = sponsorRewardsCrossed(game.sponsorHypeChecked, game.hype);
+  game.sponsorHypeChecked = Math.max(game.sponsorHypeChecked, game.hype);
+  sponsorRewards.forEach((threshold) => {
+    const reward = threshold.reward;
+    if (typeof reward.tonic === "number") game.player.potions += reward.tonic;
+    if (typeof reward.bomb === "number") game.player.bombs += reward.bomb;
+    if (typeof reward.fury === "number") game.player.furyVials += reward.fury;
+    if (typeof reward.score === "number") game.score += reward.score;
+    if (typeof reward.maxHealth === "number") {
+      game.player.maxHp += reward.maxHealth;
+      game.player.hp += reward.maxHealth;
+    }
+    if (threshold.id === "sponsor_cache") {
+      const rareWeapon = selectWeaponDrop(Math.random, { exclude: [game.player.weaponId], allowedRarities: ["rare"] });
+      if (rareWeapon) game.groundWeapons.push({ id: game.nextId++, weaponId: rareWeapon.id, x: game.player.x + 24, y: game.player.y + 18, phase: 0 });
+    }
+    setMessage(game, `SPONSOR DROP // ${threshold.name.toUpperCase()}`);
   });
 
   let mx = 0;
@@ -933,33 +1139,61 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     p.dirY = my;
   }
   p.moving = Boolean(mx || my);
+  const previousX = p.x;
+  const previousY = p.y;
   moveEntity(p, mx * p.speed, my * p.speed, dt, 9);
   if (p.moving && p.stepTimer <= 0) {
     p.stepTimer = .13;
     burst(game, p.x - p.dirX * 7, p.y - p.dirY * 7 + 10, "#607068", 2, 24);
   }
 
-  const roomId = `${Math.min(2, Math.floor(p.x / (8 * TILE)))},${Math.min(1, Math.floor(p.y / (8 * TILE)))}`;
+  let currentRoomIndex = roomIndexFor(p.x, p.y);
+  const activePylonCount = game.pylons.filter((pylon) => pylon.active).length;
+  if (game.roomKinds[currentRoomIndex] === "boss" && activePylonCount < 3) {
+    p.x = previousX;
+    p.y = previousY;
+    currentRoomIndex = roomIndexFor(p.x, p.y);
+    setMessage(game, `BOSS GATE SEALED // ${3 - activePylonCount} SIGNAL${3 - activePylonCount === 1 ? "" : "S"} MISSING`);
+  }
+  if (currentRoomIndex !== game.currentRoomIndex) {
+    game.currentRoomIndex = currentRoomIndex;
+    game.roomStarted[currentRoomIndex] = true;
+    const kind = game.roomKinds[currentRoomIndex];
+    setMessage(game, `${kind.toUpperCase()} ENCOUNTER // ${encounterLocks(kind) ? "DOORS LOCKING" : "SIGNAL ACQUIRED"}`);
+  }
+  const roomId = String(currentRoomIndex);
   if (!game.explored.has(roomId)) {
     game.explored.add(roomId);
     game.score += 120;
-    game.hype = Math.min(5, game.hype + 0.15);
-    setMessage(game, `NEW SIGNAL ZONE // ROOM ${game.explored.size} OF 6`);
+    game.hype += 3;
+    game.maxHype = Math.max(game.maxHype, game.hype);
+    setMessage(game, `NEW SIGNAL ZONE // ROOM ${game.explored.size} OF ${ROOM_COLS * ROOM_ROWS}`);
   }
 
-  const safe = { x: 12.5 * TILE, y: 12.5 * TILE };
+  game.roomTimers[currentRoomIndex] += dt;
+  if (isRoomLocked(game, currentRoomIndex)) {
+    const room = roomFor(p.x, p.y);
+    const inset = 17;
+    p.x = Math.max(room.col * 8 * TILE + inset, Math.min((room.col + 1) * 8 * TILE - inset, p.x));
+    p.y = Math.max(room.row * 8 * TILE + inset, Math.min((room.row + 1) * 8 * TILE - inset, p.y));
+  }
+
+  const safe = { x: SAFE_X, y: SAFE_Y };
   if (!game.safeUsed && dist(safe, p) < 28) {
     game.safeUsed = true;
     p.hp = p.maxHp;
     p.potions += 1;
     game.score += 200;
-    setMessage(game, "REST NODE CLAIMED // VITALS RESTORED +1 TONIC");
+    game.upgradeChoices = chooseSafeRoomUpgrades(game.floorSeed, [], 3).map((upgrade) => upgrade.id);
+    game.screen = "upgrade";
+    setMessage(game, "REST NODE CLAIMED // CHOOSE ONE RUN UPGRADE");
   }
 
   for (const trap of game.traps) {
     const active = (game.elapsed + trap.phase) % 1.5 < 0.72;
     if (active && dist(trap, p) < 19 && p.invuln <= 0) {
       p.hp -= 12;
+      game.damageTaken += 12;
       p.invuln = 0.8;
       game.shake = .18;
       burst(game, p.x, p.y, "#ff4d6d", 8, 105);
@@ -982,39 +1216,117 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     if (distance > 235) return;
     const nx = dx / Math.max(1, distance);
     const ny = dy / Math.max(1, distance);
+    if (enemy.kind === "healer") {
+      const ally = game.enemies
+        .filter((candidate) => candidate.id !== enemy.id && roomIndexFor(candidate.x, candidate.y) === currentRoomIndex && candidate.hp < candidate.maxHp)
+        .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
+      if (distance < 90) moveEntity(enemy, -nx * enemy.speed, -ny * enemy.speed, dt, 11);
+      else if (ally) {
+        const adx = ally.x - enemy.x;
+        const ady = ally.y - enemy.y;
+        const alen = Math.max(1, Math.hypot(adx, ady));
+        moveEntity(enemy, (adx / alen) * enemy.speed, (ady / alen) * enemy.speed, dt, 11);
+        if (alen < 75 && enemy.cooldown <= 0) {
+          ally.hp = Math.min(ally.maxHp, ally.hp + 14);
+          enemy.cooldown = 2.2;
+          burst(game, ally.x, ally.y, "#34d399", 8, 55);
+        }
+      }
+      return;
+    }
+    if (enemy.kind === "volatile") {
+      if (enemy.windup > 0) {
+        enemy.windup -= dt;
+        if (enemy.windup <= 0) {
+          burst(game, enemy.x, enemy.y, "#ff8a3d", 26, 180);
+          game.shake = .3;
+          if (distance < 74 && p.invuln <= 0) {
+            p.hp -= enemy.damage;
+            game.damageTaken += enemy.damage;
+            p.invuln = .7;
+          }
+          game.enemies.forEach((other) => {
+            if (other.id !== enemy.id && dist(other, enemy) < 70) other.hp -= 25;
+          });
+          enemy.hp = 0;
+        }
+        return;
+      }
+      if (distance < 64) {
+        enemy.windup = .75;
+        return;
+      }
+      moveEntity(enemy, nx * enemy.speed, ny * enemy.speed, dt, 11);
+      return;
+    }
     if (enemy.kind === "spitter") {
+      enemy.windup = Math.max(0, enemy.windup - dt);
       if (distance < 100) moveEntity(enemy, -nx * enemy.speed, -ny * enemy.speed, dt, 11);
       else if (distance > 155) moveEntity(enemy, nx * enemy.speed, ny * enemy.speed, dt, 11);
       if (enemy.cooldown <= 0) {
-        game.projectiles.push({ x: enemy.x, y: enemy.y, vx: nx * 165, vy: ny * 165, life: 2.2, damage: enemy.damage });
+        enemy.windup = .35;
+        game.projectiles.push({ x: enemy.x, y: enemy.y, vx: nx * 165, vy: ny * 165, life: 2.2, damage: enemy.damage, owner: "enemy" });
         enemy.cooldown = 1.55;
       }
     } else {
-      moveEntity(enemy, nx * enemy.speed, ny * enemy.speed, dt, enemy.kind === "boss" ? 17 : 11);
-      if (distance < (enemy.kind === "boss" ? 31 : 24) && enemy.cooldown <= 0 && p.invuln <= 0) {
-        p.hp -= enemy.damage;
-        p.invuln = 0.65;
-        game.shake = enemy.kind === "boss" ? .28 : .16;
-        burst(game, p.x, p.y, "#ff8fab", enemy.kind === "boss" ? 12 : 7, 110);
-        enemy.cooldown = enemy.kind === "boss" ? 0.75 : 1.05;
-        game.hype = Math.max(1, game.hype - 0.1);
-      }
-      if (enemy.kind === "boss" && enemy.cooldown <= 0.05 && Math.random() < 0.05) {
-        for (let i = 0; i < 8; i++) {
-          const angle = (Math.PI * 2 * i) / 8;
-          game.projectiles.push({ x: enemy.x, y: enemy.y, vx: Math.cos(angle) * 125, vy: Math.sin(angle) * 125, life: 2.5, damage: 10 });
+      if (enemy.kind === "boss") {
+        const phase = bossPhaseForHealth(enemy.hp, enemy.maxHp);
+        if (phase.id !== game.lastBossPhase) {
+          game.lastBossPhase = phase.id;
+          setMessage(game, `BOSS PHASE // ${phase.name.toUpperCase()}`);
+          game.shake = .35;
         }
+      }
+      const reach = enemy.kind === "boss" ? 34 : enemy.kind === "mimic" ? 28 : 24;
+      if (enemy.windup > 0) {
+        enemy.windup -= dt;
+        if (enemy.windup <= 0 && distance < reach + 12 && p.invuln <= 0) {
+          p.hp -= enemy.damage;
+          game.damageTaken += enemy.damage;
+          p.invuln = .65;
+          game.shake = enemy.kind === "boss" ? .3 : .16;
+          burst(game, p.x, p.y, "#ff8fab", enemy.kind === "boss" ? 12 : 7, 110);
+        }
+        return;
+      }
+      moveEntity(enemy, nx * enemy.speed, ny * enemy.speed, dt, enemy.kind === "boss" ? 17 : 11);
+      if (distance < reach && enemy.cooldown <= 0) {
+        enemy.windup = enemy.kind === "boss" ? .72 : enemy.kind === "warden" ? .58 : .4;
+        enemy.cooldown = enemy.kind === "boss" ? 1.05 : 1.25;
+        return;
+      }
+      if (enemy.kind === "boss" && enemy.cooldown <= .05 && Math.random() < .06) {
+        const phase = bossPhaseForHealth(enemy.hp, enemy.maxHp);
+        const count = phase.id === "warden_dead_air" ? 12 : phase.id === "warden_overload" ? 10 : 8;
+        for (let i = 0; i < count; i++) {
+          const angle = (Math.PI * 2 * i) / count + game.elapsed * .25;
+          game.projectiles.push({ x: enemy.x, y: enemy.y, vx: Math.cos(angle) * 125, vy: Math.sin(angle) * 125, life: 2.5, damage: 10, owner: "enemy" });
+        }
+        enemy.cooldown = 1.4;
       }
     }
   });
+  game.enemies = game.enemies.filter((enemy) => enemy.hp > 0);
 
   game.projectiles = game.projectiles.filter((shot) => {
     shot.life -= dt;
     shot.x += shot.vx * dt;
     shot.y += shot.vy * dt;
     if (shot.life <= 0 || !canMove(shot.x, shot.y, 3)) return false;
+    if (shot.owner === "player") {
+      const target = game.enemies.find((enemy) => dist(shot, enemy) < 15);
+      if (target) {
+        target.hp -= shot.damage;
+        target.flash = .14;
+        burst(game, target.x, target.y, "#f4d35e", 8, 100);
+        shot.pierce = (shot.pierce ?? 0) - 1;
+        return (shot.pierce ?? -1) >= 0;
+      }
+      return true;
+    }
     if (dist(shot, p) < 13 && p.invuln <= 0) {
       p.hp -= shot.damage;
+      game.damageTaken += shot.damage;
       p.invuln = 0.65;
       game.shake = .14;
       burst(game, p.x, p.y, "#a78bfa", 7, 90);
@@ -1022,6 +1334,46 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     }
     return true;
   });
+
+  const encounterIndex = roomIndexFor(p.x, p.y);
+  const encounterKind = game.roomKinds[encounterIndex];
+  const remainingInRoom = game.enemies.filter((enemy) => roomIndexFor(enemy.x, enemy.y) === encounterIndex).length;
+  const chestInRoomOpened = game.chests.some((chest) => roomIndexFor(chest.x, chest.y) === encounterIndex && chest.open);
+  const pylonInRoomActive = game.pylons.some((pylon) => roomIndexFor(pylon.x, pylon.y) === encounterIndex && pylon.active);
+  if (encounterKind === "boss" && remainingInRoom === 0) game.bossDead = true;
+  let encounterComplete = false;
+  if (encounterKind === "safe") encounterComplete = game.safeUsed;
+  if (["ambush", "elite"].includes(encounterKind)) encounterComplete = remainingInRoom === 0;
+  if (encounterKind === "survival") encounterComplete = game.roomTimers[encounterIndex] >= 25 && remainingInRoom === 0;
+  if (encounterKind === "trap") encounterComplete = game.roomTimers[encounterIndex] >= 15;
+  if (encounterKind === "puzzle") encounterComplete = pylonInRoomActive || remainingInRoom === 0;
+  if (encounterKind === "treasure") encounterComplete = chestInRoomOpened;
+  if (encounterKind === "broadcast") encounterComplete = game.roomTimers[encounterIndex] >= 8 && remainingInRoom === 0;
+  if (encounterKind === "boss") encounterComplete = game.bossDead;
+  if (encounterComplete && !game.roomCleared[encounterIndex]) {
+    game.roomCleared[encounterIndex] = true;
+    game.roomsCleared++;
+    game.score += encounterKind === "boss" ? 1800 : encounterKind === "elite" ? 650 : 320;
+    game.hype += encounterKind === "elite" ? 12 : 7;
+    game.maxHype = Math.max(game.maxHype, game.hype);
+    if (["elite", "broadcast", "treasure"].includes(encounterKind)) {
+      const weapon = selectWeaponDrop(Math.random, { exclude: [p.weaponId] });
+      if (weapon) {
+        const room = roomFor(p.x, p.y);
+        game.groundWeapons.push({ id: game.nextId++, weaponId: weapon.id, x: (room.col * 8 + 4.5) * TILE, y: (room.row * 8 + 4.5) * TILE, phase: Math.random() * 6 });
+      }
+    }
+    if (!game.dareComplete && game.activeDareId !== "close_quarters" && game.activeDareId !== "bomb_double") game.dareProgress++;
+    const dare = AUDIENCE_DARES.find((entry) => entry.id === game.activeDareId);
+    if (dare && game.dareProgress >= dare.target && !game.dareComplete) {
+      game.dareComplete = true;
+      game.hype += dare.hypeReward;
+      game.score += dare.scoreReward;
+      setMessage(game, `DARE COMPLETE // ${dare.name.toUpperCase()} +${dare.scoreReward}`);
+    } else {
+      setMessage(game, `${encounterKind.toUpperCase()} CLEARED // DOORS RELEASED`);
+    }
+  }
 
   if (game.time <= 0 || p.hp <= 0) {
     p.hp = Math.max(0, p.hp);
@@ -1032,6 +1384,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
 
 function makeHud(game: Game): Hud {
   const pylons = game.pylons.filter((pylon) => pylon.active).length;
+  const dare = AUDIENCE_DARES.find((entry) => entry.id === game.activeDareId) ?? AUDIENCE_DARES[0];
   return {
     hp: Math.ceil(game.player.hp),
     maxHp: game.player.maxHp,
@@ -1045,8 +1398,37 @@ function makeHud(game: Game): Hud {
     bombs: game.player.bombs,
     furyVials: game.player.furyVials,
     furyTime: game.player.furyTime,
+    weaponName: getWeapon(game.player.weaponId).name,
+    ammo: game.player.ammo,
+    roomKind: game.roomKinds[game.currentRoomIndex] ?? "safe",
+    roomsCleared: game.roomsCleared,
+    dareName: dare.name,
+    dareProgress: game.dareProgress,
+    dareTarget: dare.target,
     message: game.messageTime > 0 ? game.message : "THE SIGNAL HUMS. KEEP MOVING.",
     objective: pylons < 3 ? `Activate ${3 - pylons} signal pylon${3 - pylons === 1 ? "" : "s"}` : game.bossDead ? "Reach the exit gate" : "Defeat the Broadcast Warden",
+  };
+}
+
+function runStatsFor(game: Game): RunStats {
+  const elitesDefeated = game.roomKinds.filter((kind, index) => kind === "elite" && game.roomCleared[index]).length;
+  return {
+    won: game.screen === "won",
+    elapsedSeconds: Math.round(game.elapsed),
+    roomsDiscovered: game.explored.size,
+    totalRooms: game.roomKinds.length,
+    roomsCleared: game.roomsCleared,
+    enemiesDefeated: game.kills,
+    elitesDefeated,
+    bossesDefeated: game.bossDead ? 1 : 0,
+    damageTaken: Math.round(game.damageTaken),
+    deaths: game.screen === "lost" && game.player.hp <= 0 ? 1 : 0,
+    highestHype: Math.round(game.maxHype),
+    daresCompleted: game.dareComplete ? 1 : 0,
+    secretsFound: 0,
+    lootValue: game.upgrades.length * 250 + game.groundWeapons.length * 120,
+    remainingSeconds: Math.round(game.time),
+    favoriteWeapon: getWeapon(game.player.weaponId).name,
   };
 }
 
@@ -1056,7 +1438,7 @@ export default function Home() {
   const keysRef = useRef(new Set<string>());
   const audioRef = useRef<AudioContext | null>(null);
   const [screen, setScreen] = useState<Screen>("title");
-  const [hud, setHud] = useState<Hud>(initialHud);
+  const [hud, setHud] = useState<Hud>(() => makeHud(gameRef.current));
   const [highScore, setHighScore] = useState(0);
 
   const beep = useCallback((frequency = 220, duration = 0.06) => {
@@ -1080,6 +1462,20 @@ export default function Home() {
   }, []);
 
   const syncScreen = useCallback((game: Game) => {
+    if ((game.screen === "won" || game.screen === "lost") && !game.resultsSaved) {
+      const stats = runStatsFor(game);
+      const summary = summarizeRun(stats);
+      game.score = Math.max(game.score, summary.score);
+      const lifetimeRuns = Number(localStorage.getItem("signal-depths-lifetime-runs") || 0) + 1;
+      const lifetimeKills = Number(localStorage.getItem("signal-depths-lifetime-kills") || 0) + game.kills;
+      const storedUnlocks = JSON.parse(localStorage.getItem("signal-depths-unlocks") || "[]") as string[];
+      const earned = newlyEarnedUnlocks({ ...stats, lifetimeRuns, lifetimeKills }, storedUnlocks);
+      game.newUnlocks = earned.map((unlock) => unlock.name);
+      localStorage.setItem("signal-depths-lifetime-runs", String(lifetimeRuns));
+      localStorage.setItem("signal-depths-lifetime-kills", String(lifetimeKills));
+      localStorage.setItem("signal-depths-unlocks", JSON.stringify([...storedUnlocks, ...earned.map((unlock) => unlock.id)]));
+      game.resultsSaved = true;
+    }
     setScreen(game.screen);
     setHud(makeHud(game));
     if (game.screen === "won" || game.screen === "lost") {
@@ -1092,46 +1488,88 @@ export default function Home() {
   }, []);
 
   const startGame = useCallback(() => {
-    gameRef.current = makeGame("playing");
+    const nextGame = makeGame("playing", Math.floor(Math.random() * 1_000_000_000));
+    gameRef.current = nextGame;
     keysRef.current.clear();
     setScreen("playing");
-    setHud(initialHud);
+    setHud(makeHud(nextGame));
     beep(164, 0.1);
     canvasRef.current?.focus();
   }, [beep]);
+
+  const chooseUpgrade = useCallback((upgradeId: RunUpgradeId) => {
+    const game = gameRef.current;
+    const p = game.player;
+    game.upgrades.push(upgradeId);
+    if (upgradeId === "reinforced_heart") { p.maxHp += 20; p.hp = Math.min(p.maxHp, p.hp + 20); }
+    if (upgradeId === "second_wind") p.stamina = 100;
+    if (upgradeId === "phase_steps") p.speed += 6;
+    if (upgradeId === "long_fuse") p.furyVials++;
+    if (upgradeId === "volatile_mix") p.bombs++;
+    if (upgradeId === "last_signal") p.maxHp += 10;
+    game.upgradeChoices = [];
+    game.screen = "playing";
+    setMessage(game, `UPGRADE INSTALLED // ${RUN_UPGRADES.find((upgrade) => upgrade.id === upgradeId)?.name.toUpperCase()}`);
+    syncScreen(game);
+    beep(820, .18);
+    canvasRef.current?.focus();
+  }, [beep, syncScreen]);
 
   const attack = useCallback(() => {
     const game = gameRef.current;
     if (game.screen !== "playing") return;
     const p = game.player;
     if (p.attackCd > 0) return;
-    p.attackCd = 0.34;
+    const weapon = getWeapon(p.weaponId);
+    if (weapon.ammo !== null && p.ammo <= 0) {
+      setMessage(game, `${weapon.name.toUpperCase()} // OUT OF AMMO`);
+      beep(70, .05);
+      return;
+    }
+    p.attackCd = weapon.cooldownMs / 1000;
     p.attackFx = 0.2;
     burst(game, p.x + p.dirX * 24, p.y + p.dirY * 24, "#fff3b0", 3, 42);
+    if (weapon.projectile && p.weaponId === "scrap-launcher") {
+      p.ammo--;
+      game.projectiles.push({ x: p.x + p.dirX * 18, y: p.y + p.dirY * 18, vx: p.dirX * weapon.projectile.speed, vy: p.dirY * weapon.projectile.speed, life: weapon.projectile.lifetimeMs / 1000, damage: weapon.damage * (p.furyTime > 0 ? 1.75 : 1), owner: "player", pierce: weapon.projectile.pierce });
+      game.shake = .1;
+      beep(130, .09);
+      return;
+    }
     let hits = 0;
     game.enemies.forEach((enemy) => {
       const dx = enemy.x - p.x;
       const dy = enemy.y - p.y;
       const distance = Math.hypot(dx, dy);
       const facing = (dx * p.dirX + dy * p.dirY) / Math.max(1, distance);
-      if (distance < 54 && facing > 0.12) {
+      const facingThreshold = Math.cos(weapon.arcRadians / 2);
+      if (distance < weapon.range && facing > facingThreshold) {
         if (enemy.kind === "boss" && game.pylons.filter((x) => x.active).length < 3) {
           setMessage(game, "WARDEN SHIELDED // FEED THE THREE SIGNALS");
           return;
         }
-        enemy.hp -= p.damage * (p.furyTime > 0 ? 1.75 : 1);
+        enemy.hp -= weapon.damage * weapon.attacksPerInput * (p.furyTime > 0 ? 1.75 : 1) * (game.upgrades.filter((id) => id === "razor_arc").length ? 1.1 : 1);
         enemy.flash = 0.14;
-        enemy.x += p.dirX * 12;
-        enemy.y += p.dirY * 12;
+        enemy.x += p.dirX * weapon.knockback;
+        enemy.y += p.dirY * weapon.knockback;
         burst(game, enemy.x, enemy.y, enemy.kind === "boss" ? "#ff4d6d" : "#f4d35e", enemy.kind === "boss" ? 13 : 8, 120);
         hits++;
+        if (p.weaponId === "shock-baton") {
+          game.enemies.filter((candidate) => candidate.id !== enemy.id && dist(candidate, enemy) < 58).slice(0, 2).forEach((candidate) => {
+            candidate.hp -= weapon.damage * .65;
+            candidate.flash = .14;
+            burst(game, candidate.x, candidate.y, "#76c7dc", 7, 80);
+          });
+        }
       }
     });
     const dead = game.enemies.filter((enemy) => enemy.hp <= 0);
     dead.forEach((enemy) => {
       burst(game, enemy.x, enemy.y, enemy.kind === "boss" ? "#ff4d6d" : "#dce7e4", enemy.kind === "boss" ? 30 : 16, 160);
       game.kills++;
-      game.hype = Math.min(5, game.hype + (enemy.kind === "boss" ? 1.4 : 0.22));
+      if (game.upgrades.includes("blood_broadcast") && p.hp / p.maxHp < .35) p.hp = Math.min(p.maxHp, p.hp + 2);
+      game.hype += enemy.kind === "boss" ? 15 : 1.5;
+      game.maxHype = Math.max(game.maxHype, game.hype);
       game.score += Math.round((enemy.kind === "boss" ? 1600 : 140) * game.hype);
       if (enemy.kind === "boss") {
         game.bossDead = true;
@@ -1139,6 +1577,7 @@ export default function Home() {
       }
     });
     game.enemies = game.enemies.filter((enemy) => enemy.hp > 0);
+    if (dead.length && game.activeDareId === "close_quarters" && !game.dareComplete) game.dareProgress += dead.length;
     if (hits) {
       game.hitStop = .055;
       game.shake = dead.length ? .24 : .12;
@@ -1152,9 +1591,9 @@ export default function Home() {
     const p = game.player;
     if (game.screen !== "playing" || p.dodgeCd > 0 || p.stamina < 30) return;
     p.dodgeCd = 0.65;
-    p.invuln = 0.38;
+    p.invuln = 0.38 + game.upgrades.filter((id) => id === "phase_steps").length * .08;
     p.stamina -= 30;
-    moveEntity(p, p.dirX * 390, p.dirY * 390, 0.11, 9);
+    moveEntity(p, p.dirX * 390 * (game.upgrades.includes("phase_steps") ? 1.2 : 1), p.dirY * 390 * (game.upgrades.includes("phase_steps") ? 1.2 : 1), 0.11, 9);
     burst(game, p.x - p.dirX * 16, p.y - p.dirY * 16, "#76c7dc", 11, 95);
     game.shake = .08;
     beep(320, 0.05);
@@ -1176,7 +1615,7 @@ export default function Home() {
     if (kind === "fury") {
       if (p.furyVials <= 0) return;
       p.furyVials--;
-      p.furyTime = 8;
+      p.furyTime = 8 + game.upgrades.filter((id) => id === "long_fuse").length * 4;
       burst(game, p.x, p.y, "#ff4d6d", 20, 105);
       setMessage(game, "[3] FURY VIAL // DAMAGE BOOSTED FOR 8 SECONDS");
       beep(690, 0.16);
@@ -1204,6 +1643,7 @@ export default function Home() {
       if (enemy.kind === "boss") game.bossDead = true;
     });
     game.enemies = game.enemies.filter((enemy) => enemy.hp > 0);
+    if (dead.length >= 2 && game.activeDareId === "bomb_double" && !game.dareComplete) game.dareProgress = 1;
     setMessage(game, "[2] ROOMBREAKER BOMB // 55 DAMAGE TO THE ROOM");
     beep(110, .2);
   }, [beep]);
@@ -1214,6 +1654,19 @@ export default function Home() {
     const game = gameRef.current;
     const p = game.player;
     if (game.screen !== "playing") return;
+    const weaponDrop = game.groundWeapons.find((drop) => dist(drop, p) < 42);
+    if (weaponDrop) {
+      const previousWeapon = p.weaponId;
+      p.weaponId = weaponDrop.weaponId;
+      const definition = getWeapon(weaponDrop.weaponId);
+      p.ammo = definition.ammo ?? 0;
+      game.groundWeapons = game.groundWeapons.filter((drop) => drop.id !== weaponDrop.id);
+      if (previousWeapon !== weaponDrop.weaponId) game.groundWeapons.push({ id: game.nextId++, weaponId: previousWeapon, x: weaponDrop.x + 16, y: weaponDrop.y + 12, phase: Math.random() * 6 });
+      burst(game, weaponDrop.x, weaponDrop.y, definition.rarity === "rare" ? "#a78bfa" : "#f4d35e", 16, 100);
+      setMessage(game, `EQUIPPED // ${definition.name.toUpperCase()} — ${definition.description}`);
+      beep(760, .14);
+      return;
+    }
     const groundItem = game.groundItems.find((item) => dist(item, p) < 38);
     if (groundItem) {
       if (groundItem.kind === "tonic") p.potions++;
@@ -1253,7 +1706,7 @@ export default function Home() {
       beep(610, 0.15);
       return;
     }
-    if (game.bossDead && Math.hypot(p.x - 22.5 * TILE, p.y - 14.5 * TILE) < 44) {
+    if (game.bossDead && Math.hypot(p.x - EXIT_X, p.y - EXIT_Y) < 44) {
       game.score += Math.round(game.time * 10 + p.hp * 5 + game.explored.size * 100);
       game.screen = "won";
       setMessage(game, "FLOOR CLEARED // SIGNAL PRESERVED");
@@ -1328,6 +1781,10 @@ export default function Home() {
     return () => cancelAnimationFrame(frame);
   }, [screen, syncScreen]);
 
+  const currentGame = gameRef.current;
+  const runSummary = summarizeRun(runStatsFor(currentGame));
+  const activeDare = AUDIENCE_DARES.find((dare) => dare.id === currentGame.activeDareId) ?? AUDIENCE_DARES[0];
+
   return (
     <main className="game-page">
       <header className="topbar">
@@ -1357,6 +1814,11 @@ export default function Home() {
             <span>CURRENT DIRECTIVE</span>
             <strong>{hud.objective}</strong>
           </div>
+          <div className="weapon-card">
+            <span>ACTIVE WEAPON</span>
+            <strong>{hud.weaponName}</strong>
+            <small>{hud.ammo > 0 ? `${hud.ammo} ROUNDS` : "UNLIMITED"}</small>
+          </div>
         </aside>
 
         <div className="stage-wrap">
@@ -1368,9 +1830,28 @@ export default function Home() {
                 <div className="signal-icon" aria-hidden="true"><span /></div>
                 <p>THE FLOOR IS LISTENING</p>
                 <h2>SURVIVE THE FEED.<br />STEAL THE SIGNAL.</h2>
-                <p className="intro-copy">Six rooms. Three pylons. One warden standing between you and the surface.</p>
+                <p className="intro-copy">Twelve unknown rooms. Three signal pylons. One audience waiting for a spectacular escape.</p>
                 <button onClick={startGame}>ENTER THE DEPTHS</button>
                 {highScore > 0 && <small>LOCAL RECORD // {highScore.toLocaleString()}</small>}
+              </div>
+            )}
+            {screen === "upgrade" && (
+              <div className="game-overlay upgrade-overlay">
+                <p>OFF-AIR SHELTER // ONE CHOICE</p>
+                <h2>INSTALL A RUN UPGRADE</h2>
+                <div className="upgrade-grid">
+                  {currentGame.upgradeChoices.map((upgradeId) => {
+                    const upgrade = RUN_UPGRADES.find((candidate) => candidate.id === upgradeId);
+                    if (!upgrade) return null;
+                    return (
+                      <button key={upgrade.id} onClick={() => chooseUpgrade(upgrade.id)}>
+                        <small>{upgrade.rarity.toUpperCase()}</small>
+                        <strong>{upgrade.name}</strong>
+                        <span>{upgrade.description}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
             {screen === "paused" && (
@@ -1379,8 +1860,15 @@ export default function Home() {
             {(screen === "won" || screen === "lost") && (
               <div className={`game-overlay result-overlay ${screen}`}>
                 <p>{screen === "won" ? "FLOOR TRANSMISSION COMPLETE" : "SIGNAL LOST"}</p>
-                <h2>{screen === "won" ? "YOU MADE GOOD TELEVISION." : "THE FLOOR KEEPS ITS SECRETS."}</h2>
+                <div className="result-grade"><b>{runSummary.grade}</b><span>{runSummary.gradeLabel}</span></div>
                 <div className="result-score"><span>FINAL SCORE</span><b>{hud.score.toLocaleString()}</b></div>
+                <div className="result-stats">
+                  <span><b>{runSummary.explorationPercent}%</b> EXPLORED</span>
+                  <span><b>{currentGame.kills}</b> KILLS</span>
+                  <span><b>{currentGame.roomsCleared}</b> CLEARED</span>
+                  <span><b>×{currentGame.maxHype.toFixed(1)}</b> MAX HYPE</span>
+                </div>
+                {currentGame.newUnlocks.length > 0 && <p className="unlock-line">UNLOCKED // {currentGame.newUnlocks.join(" + ")}</p>}
                 <button onClick={startGame}>RUN IT AGAIN</button>
               </div>
             )}
@@ -1390,11 +1878,19 @@ export default function Home() {
 
         <aside className="side-panel map-panel">
           <p className="panel-label">FLOOR 01 // TRACE</p>
-          <MiniMap rooms={hud.rooms} pylons={hud.pylons} bossDead={gameRef.current.bossDead} />
+          <MiniMap rooms={hud.rooms} pylons={hud.pylons} bossDead={currentGame.bossDead} />
           <div className="progress-list">
-            <p><span>ROOMS TRACED</span><b>{hud.rooms}/6</b></p>
+            <p><span>ROOMS TRACED</span><b>{hud.rooms}/{ROOM_COLS * ROOM_ROWS}</b></p>
+            <p><span>ROOMS CLEARED</span><b>{hud.roomsCleared}/{ROOM_COLS * ROOM_ROWS}</b></p>
             <p><span>PYLONS LIVE</span><b>{hud.pylons}/3</b></p>
-            <p><span>WARDEN</span><b>{gameRef.current.bossDead ? "DOWN" : hud.pylons === 3 ? "LIVE" : "DORMANT"}</b></p>
+            <p><span>WARDEN</span><b>{currentGame.bossDead ? "DOWN" : hud.pylons === 3 ? "LIVE" : "DORMANT"}</b></p>
+          </div>
+          <div className={`dare-card ${currentGame.dareComplete ? "complete" : ""}`}>
+            <span>AUDIENCE DARE</span>
+            <strong>{hud.dareName}</strong>
+            <p>{activeDare.briefing}</p>
+            <i><em style={{ width: `${Math.min(100, (hud.dareProgress / Math.max(1, hud.dareTarget)) * 100)}%` }} /></i>
+            <small>{currentGame.dareComplete ? "COMPLETE" : `${hud.dareProgress}/${hud.dareTarget}`}</small>
           </div>
           <div className="controls-card">
             <span>CONTROL DECK</span>
@@ -1438,12 +1934,13 @@ function Meter({ label, value, max, tone }: { label: string; value: number; max:
 }
 
 function MiniMap({ rooms, pylons, bossDead }: { rooms: number; pylons: number; bossDead: boolean }) {
+  const totalRooms = ROOM_COLS * ROOM_ROWS;
   return (
-    <div className="mini-map" aria-label={`${rooms} of 6 rooms discovered`}>
-      {[0, 1, 2, 3, 4, 5].map((room) => (
-        <div key={room} className={`${room < rooms ? "seen" : ""} ${room === 2 && !bossDead ? "danger" : ""}`}>
-          {room < pylons ? <i className="pylon-dot" /> : null}
-          {room === 5 && bossDead ? <i className="exit-dot" /> : null}
+    <div className="mini-map" aria-label={`${rooms} of ${totalRooms} rooms discovered`}>
+      {Array.from({ length: totalRooms }, (_, room) => (
+        <div key={room} className={`${room < rooms ? "seen" : ""} ${room === totalRooms - 1 && !bossDead ? "danger" : ""}`}>
+          {[2, 5, 8].slice(0, pylons).includes(room) ? <i className="pylon-dot" /> : null}
+          {room === totalRooms - 1 && bossDead ? <i className="exit-dot" /> : null}
         </div>
       ))}
     </div>
