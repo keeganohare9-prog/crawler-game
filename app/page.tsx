@@ -1874,6 +1874,9 @@ export default function Home() {
             <span>CURRENT DIRECTIVE</span>
             <strong>{hud.objective}</strong>
           </div>
+          <button className="help-launcher" onClick={openHelp} aria-label="Open crawler field guide" aria-haspopup="dialog">
+            <b>?</b><span>CRAWLER FIELD GUIDE</span><kbd>H</kbd>
+          </button>
           <div className="weapon-card">
             <span>ACTIVE WEAPON</span>
             <strong>{hud.weaponName}</strong>
@@ -1979,7 +1982,6 @@ export default function Home() {
           <button className="attack-button" onClick={() => pressAction("attack")}>HIT</button>
         </div>
       </section>
-      <button className="help-launcher" onClick={openHelp} aria-label="Open crawler field guide" aria-haspopup="dialog">?</button>
       {helpOpen && (
         <HelpGuide
           section={helpSection}
