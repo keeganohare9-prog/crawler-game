@@ -25,6 +25,8 @@ type Projectile = { x: number; y: number; vx: number; vy: number; life: number; 
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; size: number };
 type Pylon = { x: number; y: number; active: boolean };
 type Chest = { x: number; y: number; open: boolean };
+type ItemKind = "tonic" | "bomb" | "fury";
+type GroundItem = { id: number; kind: ItemKind; x: number; y: number; phase: number };
 type Trap = { x: number; y: number; phase: number };
 type Screen = "title" | "playing" | "paused" | "won" | "lost";
 type Game = {
@@ -44,6 +46,9 @@ type Game = {
     dodgeCd: number;
     invuln: number;
     potions: number;
+    bombs: number;
+    furyVials: number;
+    furyTime: number;
     moving: boolean;
     stepTimer: number;
   };
@@ -52,6 +57,7 @@ type Game = {
   particles: Particle[];
   pylons: Pylon[];
   chests: Chest[];
+  groundItems: GroundItem[];
   traps: Trap[];
   explored: Set<string>;
   time: number;
@@ -78,6 +84,9 @@ type Hud = {
   rooms: number;
   pylons: number;
   potions: number;
+  bombs: number;
+  furyVials: number;
+  furyTime: number;
   message: string;
   objective: string;
 };
@@ -92,6 +101,9 @@ const initialHud: Hud = {
   rooms: 1,
   pylons: 0,
   potions: 2,
+  bombs: 0,
+  furyVials: 0,
+  furyTime: 0,
   message: "SIGNAL ACQUIRED // SUBJECT 404 ENTERS THE FLOOR",
   objective: "Activate 3 signal pylons",
 };
@@ -132,6 +144,9 @@ function makeGame(screen: Screen = "title"): Game {
       dodgeCd: 0,
       invuln: 0,
       potions: 2,
+      bombs: 0,
+      furyVials: 0,
+      furyTime: 0,
       moving: false,
       stepTimer: 0,
     },
@@ -159,6 +174,7 @@ function makeGame(screen: Screen = "title"): Game {
       { x: 14.5 * TILE, y: 10.5 * TILE, open: false },
       { x: 21.5 * TILE, y: 13.5 * TILE, open: false },
     ],
+    groundItems: [],
     traps: [
       { x: 5.5 * TILE, y: 10.5 * TILE, phase: 0 },
       { x: 6.5 * TILE, y: 10.5 * TILE, phase: 0.35 },
@@ -335,6 +351,37 @@ function renderGame(ctx: CanvasRenderingContext2D, game: Game) {
     ctx.fillStyle = chest.open ? "#231a12" : "#f4d35e";
     ctx.fillRect(chest.x - 2, chest.y - 3, 5, 7);
     if (chest.open) ctx.fillRect(chest.x - 12, chest.y - 14, 24, 4);
+  });
+
+  game.groundItems.forEach((item) => {
+    const bob = Math.sin(game.elapsed * 5 + item.phase) * 3;
+    const color = item.kind === "tonic" ? "#34d399" : item.kind === "bomb" ? "#76c7dc" : "#ff4d6d";
+    ctx.fillStyle = "rgba(0,0,0,.5)";
+    ctx.fillRect(item.x - 9, item.y + 10, 18, 4);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 9;
+    ctx.fillStyle = color;
+    if (item.kind === "tonic") {
+      ctx.fillRect(item.x - 6, item.y - 7 + bob, 12, 15);
+      ctx.fillStyle = "#e9e2c7";
+      ctx.fillRect(item.x - 3, item.y - 11 + bob, 6, 5);
+      ctx.fillRect(item.x - 3, item.y - 3 + bob, 6, 2);
+    } else if (item.kind === "bomb") {
+      ctx.beginPath();
+      ctx.arc(item.x, item.y + bob, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#f4d35e";
+      ctx.fillRect(item.x + 4, item.y - 10 + bob, 3, 7);
+      ctx.fillStyle = "#fff3b0";
+      ctx.fillRect(item.x + 7, item.y - 12 + bob, 3, 3);
+    } else {
+      ctx.fillRect(item.x - 7, item.y - 8 + bob, 14, 16);
+      ctx.fillStyle = "#fff3b0";
+      ctx.fillRect(item.x - 2, item.y - 6 + bob, 4, 12);
+      ctx.fillRect(item.x - 5, item.y - 1 + bob, 10, 3);
+    }
+    ctx.shadowBlur = 0;
+    drawPixelText(ctx, item.kind === "tonic" ? "1" : item.kind === "bomb" ? "2" : "3", item.x, item.y - 18 + bob, color, "center");
   });
 
   game.projectiles.forEach((shot) => {
@@ -536,6 +583,13 @@ function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.save();
   ctx.translate(Math.round(p.x), Math.round(p.y + bob));
   if (game.shake > 0) ctx.rotate(Math.sin(game.elapsed * 80) * .035);
+  if (p.furyTime > 0) {
+    ctx.strokeStyle = `rgba(255,77,109,${.45 + Math.sin(game.elapsed * 10) * .2})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, 22 + Math.sin(game.elapsed * 8) * 3, 0, Math.PI * 2);
+    ctx.stroke();
+  }
   ctx.fillStyle = "rgba(0,0,0,.55)";
   ctx.fillRect(-14, 13 - bob, 28, 6);
 
@@ -644,6 +698,40 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
     }
   }
 
+  // Bright threshold frames make every available passage readable at a glance.
+  const roomLeft = current.col * 8 * TILE;
+  const roomTop = current.row * 8 * TILE;
+  const doorY = roomTop + 4.5 * TILE;
+  const doorX = roomLeft + 4.5 * TILE;
+  const pulse = .72 + Math.sin(game.elapsed * 5) * .2;
+  ctx.save();
+  ctx.shadowColor = "#f4d35e";
+  ctx.shadowBlur = 10;
+  ctx.fillStyle = `rgba(244,211,94,${pulse})`;
+  ctx.strokeStyle = "#fff3b0";
+  ctx.lineWidth = 2;
+  if (current.col > 0) {
+    ctx.fillRect(roomLeft + 2, doorY - 24, 7, 48);
+    ctx.strokeRect(roomLeft + 1, doorY - 27, 13, 54);
+    drawPixelText(ctx, "◀", roomLeft + 22, doorY + 4, "#fff3b0", "center");
+  }
+  if (current.col < 2) {
+    ctx.fillRect(roomLeft + 8 * TILE - 9, doorY - 24, 7, 48);
+    ctx.strokeRect(roomLeft + 8 * TILE - 14, doorY - 27, 13, 54);
+    drawPixelText(ctx, "▶", roomLeft + 8 * TILE - 22, doorY + 4, "#fff3b0", "center");
+  }
+  if (current.row > 0) {
+    ctx.fillRect(doorX - 24, roomTop + 2, 48, 7);
+    ctx.strokeRect(doorX - 27, roomTop + 1, 54, 13);
+    drawPixelText(ctx, "▲", doorX, roomTop + 27, "#fff3b0", "center");
+  }
+  if (current.row < 1) {
+    ctx.fillRect(doorX - 24, roomTop + 8 * TILE - 9, 48, 7);
+    ctx.strokeRect(doorX - 27, roomTop + 8 * TILE - 14, 54, 13);
+    drawPixelText(ctx, "▼", doorX, roomTop + 8 * TILE - 20, "#fff3b0", "center");
+  }
+  ctx.restore();
+
   const centerX = (current.col * 8 + 4) * TILE;
   const centerY = (current.row * 8 + 4) * TILE;
   ctx.strokeStyle = "#2c4a40";
@@ -704,6 +792,37 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
     if (chest.open) ctx.fillRect(chest.x - 12, chest.y - 14, 24, 4);
   });
 
+  game.groundItems.forEach((item) => {
+    const bob = Math.sin(game.elapsed * 5 + item.phase) * 3;
+    const color = item.kind === "tonic" ? "#34d399" : item.kind === "bomb" ? "#76c7dc" : "#ff4d6d";
+    ctx.fillStyle = "rgba(0,0,0,.5)";
+    ctx.fillRect(item.x - 9, item.y + 10, 18, 4);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 9;
+    ctx.fillStyle = color;
+    if (item.kind === "tonic") {
+      ctx.fillRect(item.x - 6, item.y - 7 + bob, 12, 15);
+      ctx.fillStyle = "#e9e2c7";
+      ctx.fillRect(item.x - 3, item.y - 11 + bob, 6, 5);
+      ctx.fillRect(item.x - 3, item.y - 3 + bob, 6, 2);
+    } else if (item.kind === "bomb") {
+      ctx.beginPath();
+      ctx.arc(item.x, item.y + bob, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#f4d35e";
+      ctx.fillRect(item.x + 4, item.y - 10 + bob, 3, 7);
+      ctx.fillStyle = "#fff3b0";
+      ctx.fillRect(item.x + 7, item.y - 12 + bob, 3, 3);
+    } else {
+      ctx.fillRect(item.x - 7, item.y - 8 + bob, 14, 16);
+      ctx.fillStyle = "#fff3b0";
+      ctx.fillRect(item.x - 2, item.y - 6 + bob, 4, 12);
+      ctx.fillRect(item.x - 5, item.y - 1 + bob, 10, 3);
+    }
+    ctx.shadowBlur = 0;
+    drawPixelText(ctx, item.kind === "tonic" ? "1" : item.kind === "bomb" ? "2" : "3", item.x, item.y - 18 + bob, color, "center");
+  });
+
   game.projectiles.forEach((shot) => {
     ctx.fillStyle = "rgba(255,77,109,.28)";
     ctx.fillRect(shot.x - 8, shot.y - 8, 16, 16);
@@ -735,7 +854,9 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
 
   const p = game.player;
   let prompt = "";
-  if (game.pylons.some((x) => !x.active && dist(x, p) < 42)) prompt = "[F] JACK IN";
+  const nearbyItem = game.groundItems.find((item) => dist(item, p) < 38);
+  if (nearbyItem) prompt = `[F] PICK UP ${nearbyItem.kind.toUpperCase()}`;
+  else if (game.pylons.some((x) => !x.active && dist(x, p) < 42)) prompt = "[F] JACK IN";
   else if (game.chests.some((x) => !x.open && dist(x, p) < 42)) prompt = "[F] CRACK CACHE";
   else if (gateOpen && Math.hypot(p.x - 22.5 * TILE, p.y - 14.5 * TILE) < 44) prompt = "[F] EXIT FLOOR";
   if (prompt) drawPixelText(ctx, prompt, p.x, p.y - 34, "#fff3b0", "center");
@@ -786,6 +907,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
   p.dodgeCd = Math.max(0, p.dodgeCd - dt);
   p.invuln = Math.max(0, p.invuln - dt);
   p.stepTimer = Math.max(0, p.stepTimer - dt);
+  p.furyTime = Math.max(0, p.furyTime - dt);
   p.stamina = Math.min(100, p.stamina + dt * 24);
 
   game.particles = game.particles.filter((particle) => {
@@ -920,6 +1042,9 @@ function makeHud(game: Game): Hud {
     rooms: game.explored.size,
     pylons,
     potions: game.player.potions,
+    bombs: game.player.bombs,
+    furyVials: game.player.furyVials,
+    furyTime: game.player.furyTime,
     message: game.messageTime > 0 ? game.message : "THE SIGNAL HUMS. KEEP MOVING.",
     objective: pylons < 3 ? `Activate ${3 - pylons} signal pylon${3 - pylons === 1 ? "" : "s"}` : game.bossDead ? "Reach the exit gate" : "Defeat the Broadcast Warden",
   };
@@ -994,7 +1119,7 @@ export default function Home() {
           setMessage(game, "WARDEN SHIELDED // FEED THE THREE SIGNALS");
           return;
         }
-        enemy.hp -= p.damage;
+        enemy.hp -= p.damage * (p.furyTime > 0 ? 1.75 : 1);
         enemy.flash = 0.14;
         enemy.x += p.dirX * 12;
         enemy.y += p.dirY * 12;
@@ -1035,21 +1160,72 @@ export default function Home() {
     beep(320, 0.05);
   }, [beep]);
 
-  const usePotion = useCallback(() => {
+  const useItem = useCallback((kind: ItemKind) => {
     const game = gameRef.current;
     const p = game.player;
-    if (game.screen !== "playing" || p.potions <= 0 || p.hp >= p.maxHp) return;
-    p.potions--;
-    p.hp = Math.min(p.maxHp, p.hp + 45);
-    burst(game, p.x, p.y, "#34d399", 14, 75);
-    setMessage(game, "VITAL TONIC // +45 HEALTH");
-    beep(520, 0.12);
+    if (game.screen !== "playing") return;
+    if (kind === "tonic") {
+      if (p.potions <= 0 || p.hp >= p.maxHp) return;
+      p.potions--;
+      p.hp = Math.min(p.maxHp, p.hp + 45);
+      burst(game, p.x, p.y, "#34d399", 14, 75);
+      setMessage(game, "[1] VITAL TONIC // +45 HEALTH");
+      beep(520, 0.12);
+      return;
+    }
+    if (kind === "fury") {
+      if (p.furyVials <= 0) return;
+      p.furyVials--;
+      p.furyTime = 8;
+      burst(game, p.x, p.y, "#ff4d6d", 20, 105);
+      setMessage(game, "[3] FURY VIAL // DAMAGE BOOSTED FOR 8 SECONDS");
+      beep(690, 0.16);
+      return;
+    }
+    if (p.bombs <= 0) return;
+    p.bombs--;
+    const playerRoom = roomFor(p.x, p.y);
+    burst(game, p.x, p.y, "#76c7dc", 34, 190);
+    game.shake = .32;
+    game.hitStop = .08;
+    game.enemies.forEach((enemy) => {
+      const enemyRoom = roomFor(enemy.x, enemy.y);
+      const bossShielded = enemy.kind === "boss" && game.pylons.filter((pylon) => pylon.active).length < 3;
+      if (enemyRoom.col === playerRoom.col && enemyRoom.row === playerRoom.row && !bossShielded) {
+        enemy.hp -= 55;
+        enemy.flash = .2;
+        burst(game, enemy.x, enemy.y, "#d9f7ff", 12, 135);
+      }
+    });
+    const dead = game.enemies.filter((enemy) => enemy.hp <= 0);
+    dead.forEach((enemy) => {
+      game.kills++;
+      game.score += Math.round((enemy.kind === "boss" ? 1600 : 140) * game.hype);
+      if (enemy.kind === "boss") game.bossDead = true;
+    });
+    game.enemies = game.enemies.filter((enemy) => enemy.hp > 0);
+    setMessage(game, "[2] ROOMBREAKER BOMB // 55 DAMAGE TO THE ROOM");
+    beep(110, .2);
   }, [beep]);
+
+  const usePotion = useCallback(() => useItem("tonic"), [useItem]);
 
   const interact = useCallback(() => {
     const game = gameRef.current;
     const p = game.player;
     if (game.screen !== "playing") return;
+    const groundItem = game.groundItems.find((item) => dist(item, p) < 38);
+    if (groundItem) {
+      if (groundItem.kind === "tonic") p.potions++;
+      if (groundItem.kind === "bomb") p.bombs++;
+      if (groundItem.kind === "fury") p.furyVials++;
+      game.groundItems = game.groundItems.filter((item) => item.id !== groundItem.id);
+      game.score += 75;
+      burst(game, groundItem.x, groundItem.y, groundItem.kind === "tonic" ? "#34d399" : groundItem.kind === "bomb" ? "#76c7dc" : "#ff4d6d", 12, 90);
+      setMessage(game, `PICKUP: ${groundItem.kind === "tonic" ? "[1] VITAL TONIC" : groundItem.kind === "bomb" ? "[2] ROOMBREAKER BOMB" : "[3] FURY VIAL"}`);
+      beep(640, .1);
+      return;
+    }
     const pylon = game.pylons.find((x) => !x.active && dist(x, p) < 42);
     if (pylon) {
       pylon.active = true;
@@ -1065,14 +1241,15 @@ export default function Home() {
     if (chest) {
       chest.open = true;
       burst(game, chest.x, chest.y, "#f4d35e", 14, 90);
-      const upgrades = [
-        () => { p.damage += 7; setMessage(game, "LOOT: UNLICENSED CLEAVER // +7 DAMAGE"); },
-        () => { p.maxHp += 20; p.hp += 20; setMessage(game, "LOOT: PADDED PANIC VEST // +20 MAX HEALTH"); },
-        () => { p.speed += 14; setMessage(game, "LOOT: QUESTIONABLE SNEAKERS // +14 SPEED"); },
-        () => { p.potions += 2; setMessage(game, "LOOT: BACK-ALLEY TONICS // +2 POTIONS"); },
-      ];
-      upgrades[Math.floor(Math.random() * upgrades.length)]();
+      const lootTable: ItemKind[] = ["tonic", "bomb", "fury"];
+      const firstKind = lootTable[Math.floor(Math.random() * lootTable.length)];
+      const secondKind = lootTable[Math.floor(Math.random() * lootTable.length)];
+      game.groundItems.push(
+        { id: game.nextId++, kind: firstKind, x: chest.x - 18, y: chest.y + 18, phase: Math.random() * 6 },
+        { id: game.nextId++, kind: secondKind, x: chest.x + 18, y: chest.y + 18, phase: Math.random() * 6 },
+      );
       game.score += 180;
+      setMessage(game, "CACHE OPEN // TWO ITEMS DROPPED — PRESS [F] TO COLLECT");
       beep(610, 0.15);
       return;
     }
@@ -1085,12 +1262,14 @@ export default function Home() {
     }
   }, [beep, syncScreen]);
 
-  const pressAction = useCallback((action: "attack" | "dodge" | "interact" | "potion") => {
+  const pressAction = useCallback((action: "attack" | "dodge" | "interact" | "potion" | "bomb" | "fury") => {
     if (action === "attack") attack();
     if (action === "dodge") dodge();
     if (action === "interact") interact();
     if (action === "potion") usePotion();
-  }, [attack, dodge, interact, usePotion]);
+    if (action === "bomb") useItem("bomb");
+    if (action === "fury") useItem("fury");
+  }, [attack, dodge, interact, useItem, usePotion]);
 
   useEffect(() => {
     setHighScore(Number(localStorage.getItem("signal-depths-high-score") || 0));
@@ -1105,6 +1284,9 @@ export default function Home() {
         if (key === "shift" || key === "k") dodge();
         if (key === "f") interact();
         if (key === "e") usePotion();
+        if (key === "1") useItem("tonic");
+        if (key === "2") useItem("bomb");
+        if (key === "3") useItem("fury");
         if (key === "escape") {
           const game = gameRef.current;
           if (game.screen === "playing") game.screen = "paused";
@@ -1121,7 +1303,7 @@ export default function Home() {
       window.removeEventListener("keydown", onDown);
       window.removeEventListener("keyup", onUp);
     };
-  }, [attack, dodge, interact, syncScreen, usePotion]);
+  }, [attack, dodge, interact, syncScreen, useItem, usePotion]);
 
   useEffect(() => {
     let frame = 0;
@@ -1167,8 +1349,9 @@ export default function Home() {
           <Meter label="Vital" value={hud.hp} max={hud.maxHp} tone="health" />
           <Meter label="Drive" value={hud.stamina} max={100} tone="stamina" />
           <div className="inventory-grid">
-            <div><span>WEAPON</span><b>RUST CLEAVER</b></div>
-            <div><span>TONICS [E]</span><b>{hud.potions}</b></div>
+            <button onClick={() => useItem("tonic")} aria-label={`Use vital tonic, ${hud.potions} available`}><kbd>1</kbd><span>TONIC</span><b>×{hud.potions}</b></button>
+            <button onClick={() => useItem("bomb")} aria-label={`Use room bomb, ${hud.bombs} available`}><kbd>2</kbd><span>BOMB</span><b>×{hud.bombs}</b></button>
+            <button className={hud.furyTime > 0 ? "active" : ""} onClick={() => useItem("fury")} aria-label={`Use fury vial, ${hud.furyVials} available`}><kbd>3</kbd><span>FURY</span><b>{hud.furyTime > 0 ? `${Math.ceil(hud.furyTime)}s` : `×${hud.furyVials}`}</b></button>
           </div>
           <div className="objective-card">
             <span>CURRENT DIRECTIVE</span>
@@ -1179,7 +1362,7 @@ export default function Home() {
         <div className="stage-wrap">
           <div className="broadcast-strip"><i />LIVE FEED 001<i /></div>
           <div className="canvas-frame">
-            <canvas ref={canvasRef} width={WIDTH} height={HEIGHT} tabIndex={0} aria-label="Top-down dungeon game. Use WASD to move, Space to attack, Shift to dodge, F to interact, and E to heal." />
+            <canvas ref={canvasRef} width={WIDTH} height={HEIGHT} tabIndex={0} aria-label="Top-down dungeon game. Use WASD to move, Space to attack, Shift to dodge, F to interact, and number keys 1, 2, and 3 to use items." />
             {screen === "title" && (
               <div className="game-overlay title-overlay">
                 <div className="signal-icon" aria-hidden="true"><span /></div>
@@ -1219,7 +1402,7 @@ export default function Home() {
             <p><kbd>SPACE</kbd> ATTACK</p>
             <p><kbd>SHIFT</kbd> DODGE</p>
             <p><kbd>F</kbd> INTERACT</p>
-            <p><kbd>E</kbd> TONIC</p>
+            <p><kbd>1 / 2 / 3</kbd> ITEMS</p>
           </div>
         </aside>
       </section>
@@ -1232,7 +1415,9 @@ export default function Home() {
           <button aria-label="Move right" onPointerDown={() => keysRef.current.add("d")} onPointerUp={() => keysRef.current.delete("d")}>▶</button>
         </div>
         <div className="action-pad">
-          <button onClick={() => pressAction("potion")}>HEAL</button>
+          <button onClick={() => pressAction("potion")}>1 TONIC</button>
+          <button onClick={() => pressAction("bomb")}>2 BOMB</button>
+          <button onClick={() => pressAction("fury")}>3 FURY</button>
           <button onClick={() => pressAction("interact")}>USE</button>
           <button onClick={() => pressAction("dodge")}>DODGE</button>
           <button className="attack-button" onClick={() => pressAction("attack")}>HIT</button>

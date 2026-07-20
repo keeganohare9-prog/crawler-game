@@ -102,11 +102,14 @@ h1 {
 .meter em { display: block; height: 100%; background: var(--red); transition: width .15s; }
 .meter.stamina em { background: var(--amber); }
 
-.inventory-grid { display: grid; grid-template-columns: 1fr 60px; border: 1px solid #39453f; margin-top: 20px; }
-.inventory-grid > div { padding: 9px; min-width: 0; }
-.inventory-grid > div + div { border-left: 1px solid #39453f; text-align: center; }
-.inventory-grid span { display: block; color: var(--muted); font-size: 8px; margin-bottom: 5px; }
+.inventory-grid { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid #39453f; margin-top: 20px; }
+.inventory-grid > button { display: grid; justify-items: center; gap: 5px; padding: 8px 3px; min-width: 0; border: 0; background: #121a17; color: var(--cream); cursor: pointer; }
+.inventory-grid > button + button { border-left: 1px solid #39453f; }
+.inventory-grid > button:hover, .inventory-grid > button.active { background: rgba(244,211,94,.12); }
+.inventory-grid > button:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
+.inventory-grid span { display: block; color: var(--muted); font-size: 7px; }
 .inventory-grid b { font-size: 9px; color: var(--cream); }
+.inventory-grid kbd { width: 21px; color: var(--amber); border-color: #706021; }
 
 .objective-card { margin-top: 15px; border-left: 3px solid var(--amber); padding: 9px 9px 9px 12px; background: rgba(244,211,94,.05); }
 .objective-card strong { display: block; margin-top: 8px; font-family: var(--font-geist-sans), sans-serif; font-size: 14px; line-height: 1.15; }
