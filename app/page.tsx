@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { generateFloor, type RoomKind } from "./game/floor";
-import { getWeapon, selectWeaponDrop, type WeaponId } from "./game/combat-content";
+import { WEAPONS, getWeapon, selectWeaponDrop, type WeaponId } from "./game/combat-content";
 import { AUDIENCE_DARES, RUN_UPGRADES, bossPhaseForHealth, chooseAudienceDares, chooseSafeRoomUpgrades, newlyEarnedUnlocks, sponsorRewardsCrossed, summarizeRun, type RunStats, type RunUpgradeId } from "./game/progression";
 
 const TILE = 32;
@@ -41,6 +41,7 @@ type GroundItem = { id: number; kind: ItemKind; x: number; y: number; phase: num
 type GroundWeapon = { id: number; weaponId: WeaponId; x: number; y: number; phase: number };
 type Trap = { x: number; y: number; phase: number };
 type Screen = "title" | "playing" | "paused" | "upgrade" | "won" | "lost";
+type HelpSection = "mission" | "controls" | "arsenal" | "enemies" | "rooms";
 type Game = {
   screen: Screen;
   player: {
@@ -164,6 +165,28 @@ const enemyStats: Record<EnemyKind, Omit<Enemy, "id" | "kind" | "x" | "y" | "coo
   volatile: { hp: 36, maxHp: 36, speed: 56, damage: 24 },
   boss: { hp: 260, maxHp: 260, speed: 46, damage: 20 },
 };
+
+const ENEMY_GUIDE: Array<{ kind: EnemyKind; name: string; role: string; tip: string }> = [
+  { kind: "skitter", name: "Skitter", role: "Fast pack hunter", tip: "Keep moving and use wide swings before the pack surrounds you." },
+  { kind: "warden", name: "Warden", role: "Armored bruiser", tip: "Its heavy strike has a long warning. Dodge late, then punish the recovery." },
+  { kind: "spitter", name: "Spitter", role: "Ranged controller", tip: "It retreats when crowded. Close the gap or weave between purple bolts." },
+  { kind: "healer", name: "Signal Medic", role: "Enemy support", tip: "Eliminate it first or it will repeatedly restore wounded allies." },
+  { kind: "mimic", name: "Cache Mimic", role: "Treasure ambusher", tip: "A suspicious cache bites hard. Strike, disengage, and avoid trading hits." },
+  { kind: "volatile", name: "Volatile", role: "Walking explosion", tip: "Its flashing ring means detonation. Lure it near other enemies, then escape." },
+  { kind: "boss", name: "Broadcast Warden", role: "Three-phase floor boss", tip: "Activate all three pylons first. Watch for phase changes and radial volleys." },
+];
+
+const ROOM_GUIDE: Array<{ kind: RoomKind; name: string; copy: string }> = [
+  { kind: "safe", name: "Safe", copy: "Restore health and install one run upgrade." },
+  { kind: "ambush", name: "Ambush", copy: "Doors lock until every attacker is defeated." },
+  { kind: "survival", name: "Survival", copy: "Outlast the broadcast timer and clear the remaining enemies." },
+  { kind: "trap", name: "Trap", copy: "Read the floor rhythm and survive the hazard cycle." },
+  { kind: "treasure", name: "Treasure", copy: "Open the cache—but be ready for a mimic." },
+  { kind: "elite", name: "Elite", copy: "A dangerous squad guarding stronger loot." },
+  { kind: "puzzle", name: "Puzzle", copy: "Activate its signal objective or clear its defender." },
+  { kind: "broadcast", name: "Broadcast", copy: "A ratings challenge that rewards speed and aggression." },
+  { kind: "boss", name: "Boss", copy: "The final arena. It stays sealed until all pylons are live." },
+];
 
 function makeGame(screen: Screen = "title", floorSeed = 40_413): Game {
   const floor = generateFloor(floorSeed, { roomCount: ROOM_COLS * ROOM_ROWS });
@@ -1440,6 +1463,9 @@ export default function Home() {
   const [screen, setScreen] = useState<Screen>("title");
   const [hud, setHud] = useState<Hud>(() => makeHud(gameRef.current));
   const [highScore, setHighScore] = useState(0);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [helpSection, setHelpSection] = useState<HelpSection>("mission");
+  const helpPreviousScreen = useRef<Screen | null>(null);
 
   const beep = useCallback((frequency = 220, duration = 0.06) => {
     try {
@@ -1496,6 +1522,30 @@ export default function Home() {
     beep(164, 0.1);
     canvasRef.current?.focus();
   }, [beep]);
+
+  const openHelp = useCallback(() => {
+    const game = gameRef.current;
+    helpPreviousScreen.current = game.screen;
+    if (game.screen === "playing") {
+      game.screen = "paused";
+      syncScreen(game);
+    }
+    keysRef.current.clear();
+    setHelpOpen(true);
+    beep(430, .06);
+  }, [beep, syncScreen]);
+
+  const closeHelp = useCallback(() => {
+    const game = gameRef.current;
+    if (game.screen === "paused" && helpPreviousScreen.current === "playing") {
+      game.screen = "playing";
+      syncScreen(game);
+      requestAnimationFrame(() => canvasRef.current?.focus());
+    }
+    helpPreviousScreen.current = null;
+    setHelpOpen(false);
+    beep(260, .05);
+  }, [beep, syncScreen]);
 
   const chooseUpgrade = useCallback((upgradeId: RunUpgradeId) => {
     const game = gameRef.current;
@@ -1733,6 +1783,16 @@ export default function Home() {
       const key = event.key.toLowerCase();
       if (["arrowup", "arrowdown", "arrowleft", "arrowright", " "].includes(key)) event.preventDefault();
       if (!event.repeat) {
+        if (key === "?" || key === "h") {
+          if (helpOpen) closeHelp();
+          else openHelp();
+          return;
+        }
+        if (helpOpen && key === "escape") {
+          closeHelp();
+          return;
+        }
+        if (helpOpen) return;
         if (key === " " || key === "j") attack();
         if (key === "shift" || key === "k") dodge();
         if (key === "f") interact();
@@ -1756,7 +1816,7 @@ export default function Home() {
       window.removeEventListener("keydown", onDown);
       window.removeEventListener("keyup", onUp);
     };
-  }, [attack, dodge, interact, syncScreen, useItem, usePotion]);
+  }, [attack, closeHelp, dodge, helpOpen, interact, openHelp, syncScreen, useItem, usePotion]);
 
   useEffect(() => {
     let frame = 0;
@@ -1919,9 +1979,123 @@ export default function Home() {
           <button className="attack-button" onClick={() => pressAction("attack")}>HIT</button>
         </div>
       </section>
+      <button className="help-launcher" onClick={openHelp} aria-label="Open crawler field guide" aria-haspopup="dialog">?</button>
+      {helpOpen && (
+        <HelpGuide
+          section={helpSection}
+          onSectionChange={setHelpSection}
+          onClose={closeHelp}
+        />
+      )}
       <footer><span>AN ORIGINAL ARCADE DESCENT</span><span>ESC // PAUSE</span><span>LOCAL SAVE ENABLED</span></footer>
     </main>
   );
+}
+
+function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection; onSectionChange: (section: HelpSection) => void; onClose: () => void }) {
+  const sections: Array<{ id: HelpSection; label: string }> = [
+    { id: "mission", label: "Mission" },
+    { id: "controls", label: "Controls" },
+    { id: "arsenal", label: "Arsenal" },
+    { id: "enemies", label: "Enemies" },
+    { id: "rooms", label: "Rooms" },
+  ];
+  return (
+    <div className="help-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="help-dialog" role="dialog" aria-modal="true" aria-labelledby="help-title">
+        <header className="help-header">
+          <div><span>SUBJECT 404 // SURVIVAL FILE</span><h2 id="help-title">CRAWLER FIELD GUIDE</h2></div>
+          <button className="help-close" onClick={onClose} aria-label="Close field guide" autoFocus>×</button>
+        </header>
+        <nav className="help-tabs" aria-label="Field guide sections">
+          {sections.map((entry) => <button key={entry.id} className={section === entry.id ? "active" : ""} onClick={() => onSectionChange(entry.id)}>{entry.label}</button>)}
+        </nav>
+        <div className="help-content">
+          {section === "mission" && (
+            <div className="guide-mission">
+              <div className="guide-hero-art" aria-hidden="true"><i /><b /><em /></div>
+              <div>
+                <p className="guide-kicker">THE SHORT VERSION</p>
+                <h3>Make it through twelve unknown rooms and escape the broadcast.</h3>
+                <ol>
+                  <li><b>Explore.</b> Only your current room is visible. Doorways reveal nothing about what waits beyond.</li>
+                  <li><b>Power the feed.</b> Find and activate three golden signal pylons with <kbd>F</kbd>.</li>
+                  <li><b>Get stronger.</b> Open caches, collect items, swap weapons, and choose upgrades in safe rooms.</li>
+                  <li><b>Beat the Warden.</b> The boss gate opens after all pylons are active. Defeat it, then use the green exit.</li>
+                </ol>
+                <div className="guide-callout"><strong>HYPE = SCORE POWER</strong><span>Clear rooms and complete audience dares to raise your multiplier and trigger sponsor drops.</span></div>
+              </div>
+            </div>
+          )}
+          {section === "controls" && (
+            <div className="guide-section">
+              <div className="control-guide-grid">
+                <GuideControl keys="W A S D" title="Move" copy="Travel, aim your next strike, and approach interactable objects." />
+                <GuideControl keys="SPACE / J" title="Attack" copy="Swing or fire your equipped weapon in the direction you face." />
+                <GuideControl keys="SHIFT / K" title="Dodge" copy="Spend Drive for a fast burst with a brief window of invulnerability." />
+                <GuideControl keys="F" title="Interact" copy="Activate pylons, open caches, collect drops, swap weapons, and exit." />
+                <GuideControl keys="1 / E" title="Vital Tonic" copy="Restore 45 health. It cannot be used while already at full health." />
+                <GuideControl keys="2" title="Roombreaker Bomb" copy="Deal 55 damage to every unshielded enemy in your current room." />
+                <GuideControl keys="3" title="Fury Vial" copy="Temporarily boosts weapon damage and can be improved by upgrades." />
+                <GuideControl keys="ESC" title="Pause" copy="Freeze the broadcast. The field guide also pauses an active run." />
+              </div>
+            </div>
+          )}
+          {section === "arsenal" && (
+            <div className="guide-section">
+              <p className="guide-intro">Weapon drops appear after valuable encounters. Stand near one and press <kbd>F</kbd> to equip it; your old weapon drops to the floor.</p>
+              <div className="arsenal-grid">
+                {Object.values(WEAPONS).map((weapon) => (
+                  <article className="guide-card weapon-guide-card" key={weapon.id}>
+                    <GuideWeaponArt weapon={weapon.id} />
+                    <div><span>{weapon.rarity} // {weapon.damageType}</span><h3>{weapon.name}</h3><p>{weapon.description}</p><small>{weapon.damage} DMG · {weapon.range} RANGE · {weapon.cooldownMs}ms RECOVERY{weapon.ammo ? ` · ${weapon.ammo} AMMO` : ""}</small></div>
+                  </article>
+                ))}
+              </div>
+            </div>
+          )}
+          {section === "enemies" && (
+            <div className="guide-section">
+              <p className="guide-intro">Red or amber warning rings signal an incoming attack. A well-timed dodge is usually safer than one extra swing.</p>
+              <div className="enemy-guide-grid">
+                {ENEMY_GUIDE.map((enemy) => (
+                  <article className="guide-card enemy-guide-card" key={enemy.kind}>
+                    <GuideEnemyArt kind={enemy.kind} />
+                    <div><span>{enemy.role}</span><h3>{enemy.name}</h3><p>{enemy.tip}</p></div>
+                  </article>
+                ))}
+              </div>
+            </div>
+          )}
+          {section === "rooms" && (
+            <div className="guide-section">
+              <p className="guide-intro">Each run rearranges the room types. Combat doors glow red and seal behind you until the encounter is complete.</p>
+              <div className="room-guide-grid">
+                {ROOM_GUIDE.map((room) => <article className={`room-guide-card ${room.kind}`} key={room.kind}><GuideRoomArt kind={room.kind} /><div><span>{room.kind}</span><h3>{room.name}</h3><p>{room.copy}</p></div></article>)}
+              </div>
+            </div>
+          )}
+        </div>
+        <footer className="help-footer"><span>PRESS <kbd>?</kbd> OR <kbd>H</kbd> TO TOGGLE</span><button onClick={onClose}>RETURN TO THE FEED</button></footer>
+      </section>
+    </div>
+  );
+}
+
+function GuideControl({ keys, title, copy }: { keys: string; title: string; copy: string }) {
+  return <article className="control-guide-card"><kbd>{keys}</kbd><div><h3>{title}</h3><p>{copy}</p></div></article>;
+}
+
+function GuideWeaponArt({ weapon }: { weapon: WeaponId }) {
+  return <div className={`guide-art weapon-art ${weapon}`} aria-hidden="true"><i /><b /><em /></div>;
+}
+
+function GuideEnemyArt({ kind }: { kind: EnemyKind }) {
+  return <div className={`guide-art enemy-art ${kind}`} aria-hidden="true"><i /><b /><em /><span /></div>;
+}
+
+function GuideRoomArt({ kind }: { kind: RoomKind }) {
+  return <div className={`guide-art room-art ${kind}`} aria-hidden="true"><i /><b /><em /></div>;
 }
 
 function Meter({ label, value, max, tone }: { label: string; value: number; max: number; tone: string }) {
