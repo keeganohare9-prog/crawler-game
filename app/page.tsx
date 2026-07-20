@@ -30,9 +30,10 @@ type Enemy = {
   cooldown: number;
   flash: number;
   windup: number;
+  recovery: number;
   elite: boolean;
 };
-type Projectile = { x: number; y: number; vx: number; vy: number; life: number; damage: number; owner?: "enemy" | "player"; pierce?: number };
+type Projectile = { x: number; y: number; vx: number; vy: number; life: number; damage: number; owner?: "enemy" | "player"; pierce?: number; weaponId?: WeaponId };
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; size: number };
 type Pylon = { x: number; y: number; active: boolean };
 type Chest = { x: number; y: number; open: boolean };
@@ -100,6 +101,10 @@ type Game = {
   dareProgress: number;
   dareComplete: boolean;
   damageTaken: number;
+  damageBySource: Record<string, number>;
+  deathRoomKind: RoomKind | null;
+  weaponAttacks: Record<WeaponId, number>;
+  weaponHits: Record<WeaponId, number>;
   maxHype: number;
   roomsCleared: number;
   lastBossPhase: string;
@@ -156,7 +161,7 @@ const initialHud: Hud = {
   objective: "Activate 3 signal pylons",
 };
 
-const enemyStats: Record<EnemyKind, Omit<Enemy, "id" | "kind" | "x" | "y" | "cooldown" | "flash" | "windup" | "elite">> = {
+const enemyStats: Record<EnemyKind, Omit<Enemy, "id" | "kind" | "x" | "y" | "cooldown" | "flash" | "windup" | "recovery" | "elite">> = {
   skitter: { hp: 28, maxHp: 28, speed: 68, damage: 9 },
   warden: { hp: 65, maxHp: 65, speed: 39, damage: 16 },
   spitter: { hp: 34, maxHp: 34, speed: 48, damage: 8 },
@@ -176,6 +181,15 @@ const ENEMY_GUIDE: Array<{ kind: EnemyKind; name: string; role: string; tip: str
   { kind: "boss", name: "Broadcast Warden", role: "Three-phase floor boss", tip: "Activate all three pylons first. Watch for phase changes and radial volleys." },
 ];
 
+const WEAPON_TACTICS: Record<WeaponId, string> = {
+  cleaver: "Wide gold arc · dependable crowd control",
+  spear: "White thrust line · precise long reach",
+  hammer: "Expanding impact ring · huge knockback",
+  "twin-knives": "Double pink trails · fastest recovery",
+  "shock-baton": "Blue chain spark · arcs into nearby targets",
+  "scrap-launcher": "Orange muzzle blast · safe ranged damage",
+};
+
 const ROOM_GUIDE: Array<{ kind: RoomKind; name: string; copy: string }> = [
   { kind: "safe", name: "Safe", copy: "Restore health and install one run upgrade." },
   { kind: "ambush", name: "Ambush", copy: "Doors lock until every attacker is defeated." },
@@ -191,18 +205,21 @@ const ROOM_GUIDE: Array<{ kind: RoomKind; name: string; copy: string }> = [
 function makeGame(screen: Screen = "title", floorSeed = 40_413): Game {
   const floor = generateFloor(floorSeed, { roomCount: ROOM_COLS * ROOM_ROWS });
   const roomKinds = floor.rooms.map((room) => room.kind);
+  if (["elite", "survival", "broadcast"].includes(roomKinds[1])) roomKinds[1] = "ambush";
   let nextId = 1;
-  const enemy = (kind: EnemyKind, tx: number, ty: number, elite = false): Enemy => ({
-    id: nextId++,
-    kind,
-    x: tx * TILE + TILE / 2,
-    y: ty * TILE + TILE / 2,
-    cooldown: Math.random() * 1.2,
-    flash: 0,
-    windup: 0,
-    elite,
-    ...enemyStats[kind],
-  });
+  const enemy = (kind: EnemyKind, tx: number, ty: number, roomIndex: number, elite = false): Enemy => {
+    const stats = enemyStats[kind];
+    const progression = kind === "boss" ? 1 : .82 + (roomIndex / Math.max(1, roomKinds.length - 1)) * .28;
+    const hp = Math.round(stats.hp * progression * (elite ? 1.08 : 1));
+    return {
+      id: nextId++, kind, x: tx * TILE + TILE / 2, y: ty * TILE + TILE / 2,
+      cooldown: Math.random() * 1.2, flash: 0, windup: 0, recovery: 0, elite,
+      ...stats,
+      hp, maxHp: hp,
+      damage: Math.max(4, Math.round(stats.damage * progression)),
+      speed: stats.speed * (.92 + progression * .08),
+    };
+  };
 
   const enemies: Enemy[] = [];
   const chests: Chest[] = [];
@@ -212,13 +229,16 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413): Game {
     const row = Math.floor(index / ROOM_COLS);
     const tx = col * 8;
     const ty = row * 8;
-    if (kind === "ambush") enemies.push(enemy("skitter", tx + 3, ty + 3), enemy("skitter", tx + 6, ty + 5), enemy("spitter", tx + 5, ty + 2));
-    if (kind === "survival") enemies.push(enemy("skitter", tx + 2, ty + 5), enemy("skitter", tx + 6, ty + 2), enemy("warden", tx + 5, ty + 5));
-    if (kind === "elite") enemies.push(enemy("warden", tx + 4, ty + 4, true), enemy("healer", tx + 6, ty + 2));
-    if (kind === "broadcast") enemies.push(enemy("volatile", tx + 4, ty + 4), enemy("skitter", tx + 6, ty + 5));
-    if (kind === "puzzle") enemies.push(enemy("spitter", tx + 5, ty + 3));
-    if (kind === "treasure") enemies.push(enemy("mimic", tx + 5, ty + 5));
-    if (kind === "boss") enemies.push(enemy("boss", tx + 4, ty + 4, true));
+    if (kind === "ambush") {
+      enemies.push(enemy("skitter", tx + 3, ty + 3, index), enemy("skitter", tx + 6, ty + 5, index));
+      if (index >= 3) enemies.push(enemy("spitter", tx + 5, ty + 2, index));
+    }
+    if (kind === "survival") enemies.push(enemy("skitter", tx + 2, ty + 5, index), enemy("skitter", tx + 6, ty + 2, index), enemy("warden", tx + 5, ty + 5, index));
+    if (kind === "elite") enemies.push(enemy("warden", tx + 4, ty + 4, index, true), enemy("healer", tx + 6, ty + 2, index));
+    if (kind === "broadcast") enemies.push(enemy("volatile", tx + 4, ty + 4, index), enemy("skitter", tx + 6, ty + 5, index));
+    if (kind === "puzzle") enemies.push(enemy("spitter", tx + 5, ty + 3, index));
+    if (kind === "treasure") enemies.push(enemy("mimic", tx + 5, ty + 5, index));
+    if (kind === "boss") enemies.push(enemy("boss", tx + 4, ty + 4, index, true));
     if (["treasure", "elite", "broadcast"].includes(kind)) chests.push({ x: (tx + 2.5) * TILE, y: (ty + 5.5) * TILE, open: false });
     if (kind === "trap") {
       traps.push(
@@ -294,6 +314,10 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413): Game {
     dareProgress: 0,
     dareComplete: false,
     damageTaken: 0,
+    damageBySource: {},
+    deathRoomKind: null,
+    weaponAttacks: Object.fromEntries(Object.keys(WEAPONS).map((id) => [id, 0])) as Record<WeaponId, number>,
+    weaponHits: Object.fromEntries(Object.keys(WEAPONS).map((id) => [id, 0])) as Record<WeaponId, number>,
     maxHype: 1,
     roomsCleared: 0,
     lastBossPhase: "",
@@ -410,6 +434,28 @@ function separateEnemyFromPlayer(game: Game, enemy: Enemy) {
 function setMessage(game: Game, message: string) {
   game.message = message;
   game.messageTime = 3.2;
+}
+
+function hurtPlayer(game: Game, amount: number, source: string) {
+  game.player.hp -= amount;
+  game.damageTaken += amount;
+  game.damageBySource[source] = (game.damageBySource[source] ?? 0) + amount;
+}
+
+function creditEnemyDeaths(game: Game, dead: Enemy[]) {
+  dead.forEach((enemy) => {
+    burst(game, enemy.x, enemy.y, enemy.kind === "boss" ? "#ff4d6d" : "#dce7e4", enemy.kind === "boss" ? 34 : 20, 175);
+    burst(game, enemy.x, enemy.y, "#f4d35e", enemy.kind === "boss" ? 18 : 7, 90);
+    game.kills++;
+    if (game.upgrades.includes("blood_broadcast") && game.player.hp / game.player.maxHp < .35) game.player.hp = Math.min(game.player.maxHp, game.player.hp + 2);
+    game.hype += enemy.kind === "boss" ? 15 : 1.5;
+    game.maxHype = Math.max(game.maxHype, game.hype);
+    game.score += Math.round((enemy.kind === "boss" ? 1600 : 140) * game.hype);
+    if (enemy.kind === "boss") {
+      game.bossDead = true;
+      setMessage(game, "WARDEN DOWN // EXIT CHANNEL UNLOCKED");
+    }
+  });
 }
 
 function drawPixelText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, color = "#f4d35e", align: CanvasTextAlign = "left") {
@@ -640,7 +686,7 @@ function renderGame(ctx: CanvasRenderingContext2D, game: Game) {
   }
 }
 
-function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: number) {
+function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: number, player: Game["player"]) {
   const t = time * (enemy.kind === "skitter" ? 13 : 7) + enemy.id;
   const bob = Math.sin(t) * (enemy.kind === "boss" ? 1.2 : 1.7);
   const squash = enemy.flash > 0 ? 1.18 : 1;
@@ -648,8 +694,33 @@ function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: numb
   ctx.save();
   ctx.translate(Math.round(enemy.x), Math.round(enemy.y + bob));
   ctx.scale(squash, 2 - squash);
+  ctx.globalAlpha = enemy.recovery > 0 ? .68 : 1;
   ctx.fillStyle = "rgba(0,0,0,.5)";
   ctx.fillRect(enemy.kind === "boss" ? -22 : -14, enemy.kind === "boss" ? 19 : 12, enemy.kind === "boss" ? 44 : 28, 5);
+
+  if (enemy.windup > 0) {
+    const aim = Math.atan2(player.y - enemy.y, player.x - enemy.x);
+    const pulse = .58 + Math.sin(time * 24) * .2;
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    ctx.rotate(aim);
+    if (enemy.kind === "volatile") {
+      ctx.rotate(-aim);
+      ctx.strokeStyle = "#ff4d6d"; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(0, 0, 70, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = "rgba(255,77,109,.12)";
+      ctx.beginPath(); ctx.arc(0, 0, 70, 0, Math.PI * 2); ctx.fill();
+    } else if (enemy.kind === "spitter") {
+      ctx.strokeStyle = "#a78bfa"; ctx.lineWidth = 3; ctx.setLineDash([8, 6]);
+      ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(Math.min(220, Math.hypot(player.x - enemy.x, player.y - enemy.y)), 0); ctx.stroke();
+    } else {
+      const reach = enemy.kind === "boss" ? 50 : enemy.kind === "mimic" ? 42 : 36;
+      ctx.fillStyle = enemy.kind === "boss" ? "rgba(255,77,109,.22)" : "rgba(244,211,94,.2)";
+      ctx.beginPath(); ctx.moveTo(5, 0); ctx.arc(0, 0, reach, -.48, .48); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = enemy.kind === "boss" ? "#ff4d6d" : "#f4d35e"; ctx.lineWidth = 2; ctx.stroke();
+    }
+    ctx.restore();
+  }
 
   if (enemy.kind === "skitter") {
     const step = Math.sin(t) * 4;
@@ -836,12 +907,11 @@ function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: numb
     ctx.fillStyle = "#fff3b0";
     ctx.fillRect(-27, 18 + fist, 7, 7); ctx.fillRect(20, 18 - fist, 7, 7);
   }
-  if (enemy.windup > 0) {
-    ctx.strokeStyle = enemy.kind === "volatile" ? "#ff4d6d" : "#fff3b0";
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(0, 0, (enemy.kind === "boss" ? 34 : 23) - enemy.windup * 5, 0, Math.PI * 2);
-    ctx.stroke();
+  if (enemy.recovery > 0) {
+    ctx.fillStyle = "#9aaba4";
+    ctx.fillRect(-9, enemy.kind === "boss" ? 32 : 22, 5, 3);
+    ctx.fillRect(-2, enemy.kind === "boss" ? 32 : 22, 5, 3);
+    ctx.fillRect(5, enemy.kind === "boss" ? 32 : 22, 5, 3);
   }
   ctx.restore();
 
@@ -908,29 +978,62 @@ function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
     ctx.fillRect(-3, -8, 6, 2);
   }
 
-  // Directional sword with a wide, readable swing.
+  // Every weapon has its own silhouette and attack motion.
   const swingProgress = p.attackFx > 0 ? 1 - p.attackFx / .2 : 1;
-  const swordAngle = p.attackFx > 0 ? facingAngle - 1.45 + swingProgress * 2.55 : facingAngle + .18;
-  ctx.rotate(swordAngle);
+  const swingAngle = p.attackFx > 0 ? facingAngle - weapon.arcRadians * .65 + swingProgress * weapon.arcRadians * 1.3 : facingAngle + .18;
+  ctx.rotate(swingAngle);
   ctx.fillStyle = "#6b4d22";
   ctx.fillRect(7, -3, 8, 6);
   ctx.fillStyle = "#f4d35e";
   ctx.fillRect(13, -5, 5, 10);
-  const bladeLength = p.weaponId === "spear" ? 36 : p.weaponId === "hammer" ? 20 : p.weaponId === "twin-knives" ? 15 : 24;
-  ctx.fillStyle = p.weaponId === "shock-baton" ? "#76c7dc" : "#dce7e4";
-  ctx.fillRect(18, -3, bladeLength, p.weaponId === "hammer" ? 9 : 6);
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(21, -2, Math.max(10, bladeLength - 5), 2);
-  ctx.fillStyle = "#80918b";
-  ctx.fillRect(18 + bladeLength - 4, -3, p.weaponId === "hammer" ? 13 : 6, p.weaponId === "hammer" ? 13 : 6);
+  if (p.weaponId === "hammer") {
+    ctx.fillStyle = "#7c8b85"; ctx.fillRect(16, -3, 24, 6);
+    ctx.fillStyle = "#46514d"; ctx.fillRect(34, -11, 16, 22);
+    ctx.fillStyle = "#dce7e4"; ctx.fillRect(37, -8, 10, 4);
+  } else if (p.weaponId === "spear") {
+    ctx.fillStyle = "#9a7650"; ctx.fillRect(16, -2, 39, 4);
+    ctx.fillStyle = "#dce7e4"; ctx.beginPath(); ctx.moveTo(55, -7); ctx.lineTo(69, 0); ctx.lineTo(55, 7); ctx.fill();
+  } else if (p.weaponId === "twin-knives") {
+    ctx.fillStyle = "#dce7e4"; ctx.fillRect(17, -8, 21, 5); ctx.fillRect(17, 4, 21, 5);
+    ctx.fillStyle = "#fff"; ctx.fillRect(20, -7, 15, 2); ctx.fillRect(20, 5, 15, 2);
+  } else if (p.weaponId === "scrap-launcher") {
+    ctx.fillStyle = "#6d7974"; ctx.fillRect(16, -8, 31, 16);
+    ctx.fillStyle = "#ff8a3d"; ctx.fillRect(21, -5, 18, 5);
+    ctx.fillStyle = "#202725"; ctx.fillRect(43, -5, 10, 10); ctx.fillRect(24, 8, 8, 8);
+  } else {
+    const bladeLength = p.weaponId === "shock-baton" ? 29 : 24;
+    ctx.fillStyle = p.weaponId === "shock-baton" ? "#76c7dc" : "#dce7e4";
+    ctx.fillRect(18, -3, bladeLength, 6);
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(21, -2, Math.max(10, bladeLength - 5), 2);
+    ctx.fillStyle = p.weaponId === "shock-baton" ? "#b9f6ff" : "#80918b";
+    ctx.fillRect(18 + bladeLength - 4, -4, 7, 8);
+  }
   ctx.restore();
 
   if (p.attackFx > 0) {
-    ctx.strokeStyle = `rgba(255,243,176,${Math.min(1, p.attackFx * 6)})`;
-    ctx.lineWidth = 6;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, Math.min(62, Math.max(32, weapon.range * .8)), facingAngle - weapon.arcRadians / 2, facingAngle + weapon.arcRadians / 2);
-    ctx.stroke();
+    const alpha = Math.min(1, p.attackFx * 6);
+    ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(facingAngle);
+    if (p.weaponId === "hammer") {
+      ctx.fillStyle = `rgba(244,211,94,${alpha * .25})`;
+      ctx.beginPath(); ctx.arc(48, 0, 30 * swingProgress, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = `rgba(255,243,176,${alpha})`; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.arc(48, 0, 12 + 26 * swingProgress, 0, Math.PI * 2); ctx.stroke();
+    } else if (p.weaponId === "spear") {
+      ctx.strokeStyle = `rgba(255,255,255,${alpha})`; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.moveTo(22, 0); ctx.lineTo(weapon.range * (.55 + swingProgress * .45), 0); ctx.stroke();
+    } else if (p.weaponId === "shock-baton") {
+      ctx.strokeStyle = `rgba(118,199,220,${alpha})`; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(22, -5); ctx.lineTo(35, 5); ctx.lineTo(45, -7); ctx.lineTo(57, 3); ctx.stroke();
+    } else if (p.weaponId === "scrap-launcher") {
+      ctx.fillStyle = `rgba(255,138,61,${alpha})`;
+      ctx.beginPath(); ctx.moveTo(48, 0); ctx.lineTo(65, -10); ctx.lineTo(61, 0); ctx.lineTo(65, 10); ctx.fill();
+    } else {
+      ctx.strokeStyle = p.weaponId === "twin-knives" ? `rgba(255,143,171,${alpha})` : `rgba(255,243,176,${alpha})`;
+      ctx.lineWidth = p.weaponId === "twin-knives" ? 3 : 6;
+      ctx.beginPath(); ctx.arc(0, 0, Math.min(62, Math.max(32, weapon.range * .8)), -weapon.arcRadians / 2, weapon.arcRadians / 2); ctx.stroke();
+      if (p.weaponId === "twin-knives") { ctx.beginPath(); ctx.arc(0, 0, 27, -weapon.arcRadians / 2 + .25, weapon.arcRadians / 2 - .25); ctx.stroke(); }
+    }
+    ctx.restore();
   }
 }
 
@@ -1139,7 +1242,7 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   });
   ctx.globalAlpha = 1;
 
-  game.enemies.forEach((enemy) => drawEnemySprite(ctx, enemy, game.elapsed));
+  game.enemies.forEach((enemy) => drawEnemySprite(ctx, enemy, game.elapsed, game.player));
   drawPlayerSprite(ctx, game);
 
   const activePylons = game.pylons.filter((pylon) => pylon.active).length;
@@ -1307,8 +1410,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
   for (const trap of game.traps) {
     const active = (game.elapsed + trap.phase) % 1.5 < 0.72;
     if (active && dist(trap, p) < 19 && p.invuln <= 0) {
-      p.hp -= 12;
-      game.damageTaken += 12;
+      hurtPlayer(game, 12, "Floor spikes");
       p.invuln = 0.8;
       game.shake = .18;
       burst(game, p.x, p.y, "#ff4d6d", 8, 105);
@@ -1322,6 +1424,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
   game.enemies.forEach((enemy) => {
     enemy.cooldown -= dt;
     enemy.flash = Math.max(0, enemy.flash - dt);
+    enemy.recovery = Math.max(0, enemy.recovery - dt);
     const enemyRoom = roomFor(enemy.x, enemy.y);
     if (enemyRoom.col !== playerRoom.col || enemyRoom.row !== playerRoom.row) return;
     if (enemy.kind === "boss" && activePylons < 3) return;
@@ -1331,6 +1434,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     if (distance > 235) return;
     const nx = dx / Math.max(1, distance);
     const ny = dy / Math.max(1, distance);
+    if (enemy.recovery > 0) return;
     if (enemy.kind === "healer") {
       const ally = game.enemies
         .filter((candidate) => candidate.id !== enemy.id && roomIndexFor(candidate.x, candidate.y) === currentRoomIndex && candidate.hp < candidate.maxHp)
@@ -1356,8 +1460,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
           burst(game, enemy.x, enemy.y, "#ff8a3d", 26, 180);
           game.shake = .3;
           if (distance < 74 && p.invuln <= 0) {
-            p.hp -= enemy.damage;
-            game.damageTaken += enemy.damage;
+            hurtPlayer(game, enemy.damage, "Fusewalker blast");
             p.invuln = .7;
           }
           game.enemies.forEach((other) => {
@@ -1375,13 +1478,23 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
       return;
     }
     if (enemy.kind === "spitter") {
-      enemy.windup = Math.max(0, enemy.windup - dt);
+      if (enemy.windup > 0) {
+        enemy.windup -= dt;
+        if (enemy.windup <= 0) {
+          const aimX = p.x - enemy.x;
+          const aimY = p.y - enemy.y;
+          const aimLength = Math.max(1, Math.hypot(aimX, aimY));
+          game.projectiles.push({ x: enemy.x, y: enemy.y, vx: (aimX / aimLength) * 165, vy: (aimY / aimLength) * 165, life: 2.2, damage: enemy.damage, owner: "enemy" });
+          enemy.cooldown = 1.55;
+          enemy.recovery = .3;
+          burst(game, enemy.x, enemy.y, "#a78bfa", 6, 55);
+        }
+        return;
+      }
       if (distance < 100) moveEntity(enemy, -nx * enemy.speed, -ny * enemy.speed, dt, 11);
       else if (distance > 155) moveEntity(enemy, nx * enemy.speed, ny * enemy.speed, dt, 11);
       if (enemy.cooldown <= 0) {
-        enemy.windup = .35;
-        game.projectiles.push({ x: enemy.x, y: enemy.y, vx: nx * 165, vy: ny * 165, life: 2.2, damage: enemy.damage, owner: "enemy" });
-        enemy.cooldown = 1.55;
+        enemy.windup = .5;
       }
     } else {
       if (enemy.kind === "boss") {
@@ -1396,12 +1509,12 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
       if (enemy.windup > 0) {
         enemy.windup -= dt;
         if (enemy.windup <= 0 && distance < reach + 12 && p.invuln <= 0) {
-          p.hp -= enemy.damage;
-          game.damageTaken += enemy.damage;
+          hurtPlayer(game, enemy.damage, enemy.kind === "boss" ? "Broadcast Warden" : enemy.kind === "warden" ? "Ironjaw strike" : enemy.kind === "mimic" ? "Mimic bite" : "Skitter slash");
           p.invuln = .65;
           game.shake = enemy.kind === "boss" ? .3 : .16;
           burst(game, p.x, p.y, "#ff8fab", enemy.kind === "boss" ? 12 : 7, 110);
         }
+        if (enemy.windup <= 0) enemy.recovery = enemy.kind === "boss" ? .5 : enemy.kind === "warden" ? .68 : enemy.kind === "mimic" ? .42 : .25;
         return;
       }
       moveEntity(enemy, nx * enemy.speed, ny * enemy.speed, dt, enemy.kind === "boss" ? 17 : 11);
@@ -1422,6 +1535,8 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
       }
     }
   });
+  const chainDeaths = game.enemies.filter((enemy) => enemy.hp <= 0);
+  creditEnemyDeaths(game, chainDeaths);
   game.enemies.forEach((enemy) => {
     if (enemy.hp > 0 && roomIndexFor(enemy.x, enemy.y) === currentRoomIndex) separateEnemyFromPlayer(game, enemy);
   });
@@ -1436,6 +1551,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
       const target = game.enemies.find((enemy) => dist(shot, enemy) < 15);
       if (target) {
         target.hp -= shot.damage;
+        game.weaponHits[shot.weaponId ?? game.player.weaponId]++;
         target.flash = .14;
         burst(game, target.x, target.y, "#f4d35e", 8, 100);
         shot.pierce = (shot.pierce ?? 0) - 1;
@@ -1444,8 +1560,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
       return true;
     }
     if (dist(shot, p) < 13 && p.invuln <= 0) {
-      p.hp -= shot.damage;
-      game.damageTaken += shot.damage;
+      hurtPlayer(game, shot.damage, "Void projectile");
       p.invuln = 0.65;
       game.shake = .14;
       burst(game, p.x, p.y, "#a78bfa", 7, 90);
@@ -1453,6 +1568,9 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     }
     return true;
   });
+  const projectileDeaths = game.enemies.filter((enemy) => enemy.hp <= 0);
+  creditEnemyDeaths(game, projectileDeaths);
+  game.enemies = game.enemies.filter((enemy) => enemy.hp > 0);
 
   const encounterIndex = roomIndexFor(p.x, p.y);
   const encounterKind = game.roomKinds[encounterIndex];
@@ -1496,6 +1614,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
 
   if (game.time <= 0 || p.hp <= 0) {
     p.hp = Math.max(0, p.hp);
+    if (p.hp <= 0 && game.deathRoomKind === null) game.deathRoomKind = game.roomKinds[currentRoomIndex];
     game.screen = "lost";
     setMessage(game, game.time <= 0 ? "BROADCAST WINDOW CLOSED" : "SUBJECT 404 OFFLINE");
   }
@@ -1673,11 +1792,12 @@ export default function Home() {
       return;
     }
     p.attackCd = weapon.cooldownMs / 1000;
-    p.attackFx = 0.2;
+    p.attackFx = p.weaponId === "hammer" ? .3 : p.weaponId === "spear" ? .24 : .2;
+    game.weaponAttacks[p.weaponId]++;
     burst(game, p.x + p.dirX * 24, p.y + p.dirY * 24, "#fff3b0", 3, 42);
     if (weapon.projectile && p.weaponId === "scrap-launcher") {
       p.ammo--;
-      game.projectiles.push({ x: p.x + p.dirX * 18, y: p.y + p.dirY * 18, vx: p.dirX * weapon.projectile.speed, vy: p.dirY * weapon.projectile.speed, life: weapon.projectile.lifetimeMs / 1000, damage: weapon.damage * (p.furyTime > 0 ? 1.75 : 1), owner: "player", pierce: weapon.projectile.pierce });
+      game.projectiles.push({ x: p.x + p.dirX * 18, y: p.y + p.dirY * 18, vx: p.dirX * weapon.projectile.speed, vy: p.dirY * weapon.projectile.speed, life: weapon.projectile.lifetimeMs / 1000, damage: weapon.damage * (p.furyTime > 0 ? 1.75 : 1), owner: "player", pierce: weapon.projectile.pierce, weaponId: p.weaponId });
       game.shake = .1;
       beep(130, .09);
       return;
@@ -1709,19 +1829,9 @@ export default function Home() {
         }
       }
     });
+    game.weaponHits[p.weaponId] += hits;
     const dead = game.enemies.filter((enemy) => enemy.hp <= 0);
-    dead.forEach((enemy) => {
-      burst(game, enemy.x, enemy.y, enemy.kind === "boss" ? "#ff4d6d" : "#dce7e4", enemy.kind === "boss" ? 30 : 16, 160);
-      game.kills++;
-      if (game.upgrades.includes("blood_broadcast") && p.hp / p.maxHp < .35) p.hp = Math.min(p.maxHp, p.hp + 2);
-      game.hype += enemy.kind === "boss" ? 15 : 1.5;
-      game.maxHype = Math.max(game.maxHype, game.hype);
-      game.score += Math.round((enemy.kind === "boss" ? 1600 : 140) * game.hype);
-      if (enemy.kind === "boss") {
-        game.bossDead = true;
-        setMessage(game, "WARDEN DOWN // EXIT CHANNEL UNLOCKED");
-      }
-    });
+    creditEnemyDeaths(game, dead);
     game.enemies = game.enemies.filter((enemy) => enemy.hp > 0);
     if (dead.length && game.activeDareId === "close_quarters" && !game.dareComplete) game.dareProgress += dead.length;
     if (hits) {
@@ -1940,6 +2050,9 @@ export default function Home() {
   const currentGame = gameRef.current;
   const runSummary = summarizeRun(runStatsFor(currentGame));
   const activeDare = AUDIENCE_DARES.find((dare) => dare.id === currentGame.activeDareId) ?? AUDIENCE_DARES[0];
+  const damageBreakdown = Object.entries(currentGame.damageBySource).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const mostUsedWeapon = (Object.entries(currentGame.weaponAttacks) as Array<[WeaponId, number]>).sort((a, b) => b[1] - a[1])[0];
+  const hitsPerAttack = mostUsedWeapon && mostUsedWeapon[1] > 0 ? (currentGame.weaponHits[mostUsedWeapon[0]] / mostUsedWeapon[1]).toFixed(1) : "0.0";
 
   return (
     <main className="game-page">
@@ -2026,6 +2139,10 @@ export default function Home() {
                   <span><b>{currentGame.kills}</b> KILLS</span>
                   <span><b>{currentGame.roomsCleared}</b> CLEARED</span>
                   <span><b>×{currentGame.maxHype.toFixed(1)}</b> MAX HYPE</span>
+                </div>
+                <div className="result-breakdown">
+                  <div><span>DAMAGE REPORT</span>{damageBreakdown.length ? damageBreakdown.map(([source, amount]) => <p key={source}><b>{source}</b><em>{Math.round(amount)}</em></p>) : <p><b>Untouched</b><em>0</em></p>}</div>
+                  <div><span>COMBAT READOUT</span><p><b>{mostUsedWeapon?.[1] ? getWeapon(mostUsedWeapon[0]).name : "No weapon used"}</b><em>{mostUsedWeapon?.[1] ?? 0} ATK</em></p><p><b>Hits per attack</b><em>{hitsPerAttack}</em></p>{screen === "lost" && <p><b>Signal lost in</b><em>{currentGame.deathRoomKind?.toUpperCase() ?? (currentGame.time <= 0 ? "TIMEOUT" : "UNKNOWN")}</em></p>}</div>
                 </div>
                 {currentGame.newUnlocks.length > 0 && <p className="unlock-line">UNLOCKED // {currentGame.newUnlocks.join(" + ")}</p>}
                 <button onClick={startGame}>RUN IT AGAIN</button>
@@ -2146,7 +2263,7 @@ function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection
                 {Object.values(WEAPONS).map((weapon) => (
                   <article className="guide-card weapon-guide-card" key={weapon.id}>
                     <GuideWeaponArt weapon={weapon.id} />
-                    <div><span>{weapon.rarity} // {weapon.damageType}</span><h3>{weapon.name}</h3><p>{weapon.description}</p><small>{weapon.damage} DMG · {weapon.range} RANGE · {weapon.cooldownMs}ms RECOVERY{weapon.ammo ? ` · ${weapon.ammo} AMMO` : ""}</small></div>
+                    <div><span>{weapon.rarity} // {weapon.damageType}</span><h3>{weapon.name}</h3><p>{weapon.description}</p><strong className="weapon-tactic">{WEAPON_TACTICS[weapon.id]}</strong><small>{weapon.damage} DMG · {weapon.range} RANGE · {weapon.cooldownMs}ms RECOVERY{weapon.ammo ? ` · ${weapon.ammo} AMMO` : ""}</small></div>
                   </article>
                 ))}
               </div>
@@ -2154,7 +2271,7 @@ function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection
           )}
           {section === "enemies" && (
             <div className="guide-section">
-              <p className="guide-intro">Red or amber warning rings signal an incoming attack. A well-timed dodge is usually safer than one extra swing.</p>
+              <p className="guide-intro">Read the floor before the enemy: gold cones warn of melee strikes, violet lines mark incoming bolts, and red circles show blast zones. Dimmed enemies are recovering—punish them before they reset.</p>
               <div className="enemy-guide-grid">
                 {ENEMY_GUIDE.map((enemy) => (
                   <article className="guide-card enemy-guide-card" key={enemy.kind}>

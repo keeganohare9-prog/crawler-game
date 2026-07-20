@@ -188,6 +188,12 @@ canvas { width: 100%; height: 100%; display: block; object-fit: contain; image-r
 .result-stats { display: grid; grid-template-columns: repeat(4, auto); gap: 9px 22px; margin-top: 10px; color: var(--muted); font-size: 8px; position: relative; }
 .result-stats span { display: grid; gap: 3px; }
 .result-stats b { color: var(--cream); font-size: 13px; }
+.result-breakdown { width: min(520px, 100%); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 13px; position: relative; text-align: left; }
+.result-breakdown > div { border: 1px solid #485750; background: rgba(9,14,12,.74); padding: 9px 11px; }
+.result-breakdown > div > span { display: block; color: var(--amber); font-size: 8px; letter-spacing: .15em; margin-bottom: 5px; }
+.result-breakdown p { display: flex; justify-content: space-between; gap: 12px; margin: 3px 0; color: var(--muted); font-size: 8px; letter-spacing: 0; }
+.result-breakdown p b { color: var(--cream); font-weight: 600; }
+.result-breakdown p em { color: var(--amber); font-style: normal; white-space: nowrap; }
 .result-overlay .unlock-line { color: var(--green); letter-spacing: .08em; margin: 10px 0 0; }
 .pause-actions { position: absolute; inset: 0; display: grid; place-items: center; padding-top: 85px; }
 
@@ -284,6 +290,7 @@ footer { margin-top: 14px; padding-top: 12px; border-top: 1px solid #28322f; dis
 .arsenal-grid, .enemy-guide-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
 .guide-card { display:grid; grid-template-columns:110px 1fr; gap:15px; align-items:center; min-height:138px; padding:13px; border:1px solid #34423d; background:#101714; }
 .guide-card small { display:block; margin-top:9px; color:#6f8179; font-size:7px; line-height:1.45; }
+.weapon-tactic { display:block; margin-top:7px; color:#76c7dc; font-size:8px; line-height:1.4; font-weight:600; }
 .guide-art { position:relative; width:100%; height:100px; border:1px solid #303d38; background:radial-gradient(circle,#1d2c27,#0b100e 68%); overflow:hidden; }
 
 .weapon-art::before { content:""; position:absolute; left:23px; top:45px; width:66px; height:9px; background:#ddd7bd; border:3px solid #61716a; transform:rotate(-35deg); transform-origin:center; }
@@ -411,6 +418,7 @@ footer { margin-top: 14px; padding-top: 12px; border-top: 1px solid #28322f; dis
 }
 
 @media (max-width: 480px) {
+  .result-breakdown { grid-template-columns: 1fr; }
   .brand-kicker { font-size: 8px; }
   h1 { font-size: 29px; }
   .status-panel { grid-template-columns: 70px 1fr; }
