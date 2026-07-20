@@ -369,6 +369,44 @@ function moveEntity(entity: { x: number; y: number }, vx: number, vy: number, dt
   if (canMove(entity.x, ny, radius)) entity.y = ny;
 }
 
+function separateEnemyFromPlayer(game: Game, enemy: Enemy) {
+  const player = game.player;
+  const minimumDistance = enemy.kind === "boss" ? 42 : enemy.kind === "warden" || enemy.kind === "mimic" ? 32 : 28;
+  const dx = enemy.x - player.x;
+  const dy = enemy.y - player.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance >= minimumDistance) return;
+
+  const baseX = distance > .01 ? dx / distance : -(player.dirX || 1);
+  const baseY = distance > .01 ? dy / distance : -player.dirY;
+  const directions = [
+    { x: baseX, y: baseY },
+    { x: -baseY, y: baseX },
+    { x: baseY, y: -baseX },
+  ];
+  const enemyRadius = enemy.kind === "boss" ? 17 : 11;
+
+  for (const direction of directions) {
+    const targetX = player.x + direction.x * minimumDistance;
+    const targetY = player.y + direction.y * minimumDistance;
+    if (canMove(targetX, targetY, enemyRadius)) {
+      enemy.x = targetX;
+      enemy.y = targetY;
+      return;
+    }
+  }
+
+  for (const direction of directions) {
+    const targetX = enemy.x - direction.x * minimumDistance;
+    const targetY = enemy.y - direction.y * minimumDistance;
+    if (canMove(targetX, targetY, 9)) {
+      player.x = targetX;
+      player.y = targetY;
+      return;
+    }
+  }
+}
+
 function setMessage(game: Game, message: string) {
   game.message = message;
   game.messageTime = 3.2;
@@ -1313,7 +1351,8 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
         return;
       }
       moveEntity(enemy, nx * enemy.speed, ny * enemy.speed, dt, enemy.kind === "boss" ? 17 : 11);
-      if (distance < reach && enemy.cooldown <= 0) {
+      const postMoveDistance = dist(enemy, p);
+      if (postMoveDistance <= reach + 8 && enemy.cooldown <= 0) {
         enemy.windup = enemy.kind === "boss" ? .72 : enemy.kind === "warden" ? .58 : .4;
         enemy.cooldown = enemy.kind === "boss" ? 1.05 : 1.25;
         return;
@@ -1328,6 +1367,9 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
         enemy.cooldown = 1.4;
       }
     }
+  });
+  game.enemies.forEach((enemy) => {
+    if (enemy.hp > 0 && roomIndexFor(enemy.x, enemy.y) === currentRoomIndex) separateEnemyFromPlayer(game, enemy);
   });
   game.enemies = game.enemies.filter((enemy) => enemy.hp > 0);
 
