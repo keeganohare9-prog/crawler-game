@@ -167,12 +167,12 @@ const enemyStats: Record<EnemyKind, Omit<Enemy, "id" | "kind" | "x" | "y" | "coo
 };
 
 const ENEMY_GUIDE: Array<{ kind: EnemyKind; name: string; role: string; tip: string }> = [
-  { kind: "skitter", name: "Skitter", role: "Fast pack hunter", tip: "Keep moving and use wide swings before the pack surrounds you." },
-  { kind: "warden", name: "Warden", role: "Armored bruiser", tip: "Its heavy strike has a long warning. Dodge late, then punish the recovery." },
-  { kind: "spitter", name: "Spitter", role: "Ranged controller", tip: "It retreats when crowded. Close the gap or weave between purple bolts." },
-  { kind: "healer", name: "Signal Medic", role: "Enemy support", tip: "Eliminate it first or it will repeatedly restore wounded allies." },
-  { kind: "mimic", name: "Cache Mimic", role: "Treasure ambusher", tip: "A suspicious cache bites hard. Strike, disengage, and avoid trading hits." },
-  { kind: "volatile", name: "Volatile", role: "Walking explosion", tip: "Its flashing ring means detonation. Lure it near other enemies, then escape." },
+  { kind: "skitter", name: "Razorback Skitter", role: "Fast pack hunter", tip: "The striped carapace and six twitching legs are your warning: use wide swings before the pack surrounds you." },
+  { kind: "warden", name: "Ironjaw Warden", role: "Armored bruiser", tip: "Watch its shield and raised shock-club. Dodge the heavy strike late, then punish the recovery." },
+  { kind: "spitter", name: "Void Spitter", role: "Ranged controller", tip: "Its single bright eye tracks targets while its tentacles retreat. Close the gap or weave between purple bolts." },
+  { kind: "healer", name: "Halo Medic", role: "Enemy support", tip: "Orbiting repair nodes identify this floating medic. Eliminate it before it restores wounded allies." },
+  { kind: "mimic", name: "Gilt-Maw Mimic", role: "Treasure ambusher", tip: "Look for eyes beneath the golden lid. Strike, disengage, and stay clear of its tongue and double row of teeth." },
+  { kind: "volatile", name: "Fusewalker", role: "Walking explosion", tip: "Its fuse and flashing containment ring mean detonation. Lure it near other enemies, then escape." },
   { kind: "boss", name: "Broadcast Warden", role: "Three-phase floor boss", tip: "Activate all three pylons first. Watch for phase changes and radial volleys." },
 ];
 
@@ -652,135 +652,189 @@ function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: numb
   ctx.fillRect(enemy.kind === "boss" ? -22 : -14, enemy.kind === "boss" ? 19 : 12, enemy.kind === "boss" ? 44 : 28, 5);
 
   if (enemy.kind === "skitter") {
-    const leg = Math.sin(t) * 4;
-    ctx.strokeStyle = flash ? "#fff" : "#406b36";
+    const step = Math.sin(t) * 4;
+    ctx.strokeStyle = flash ? "#fff" : "#315b38";
     ctx.lineWidth = 3;
     for (let side = -1; side <= 1; side += 2) {
-      for (let i = -1; i <= 1; i++) {
+      [-7, 0, 7].forEach((offset, index) => {
         ctx.beginPath();
-        ctx.moveTo(side * 7, i * 5);
-        ctx.lineTo(side * (15 + (i % 2) * leg), i * 8 + leg * side * .3);
+        ctx.moveTo(side * 8, offset);
+        ctx.lineTo(side * (14 + index * 2), offset + (index - 1) * 5 + step * side * (index % 2 ? -1 : 1));
+        ctx.lineTo(side * (18 + index), offset + (index - 1) * 7);
         ctx.stroke();
-      }
+      });
     }
-    ctx.fillStyle = flash ? "#fff" : "#7ddf64";
-    ctx.fillRect(-10, -11, 20, 22);
-    ctx.fillStyle = flash ? "#fff" : "#a6f58f";
-    ctx.fillRect(-7, -14, 14, 8);
-    ctx.fillStyle = "#182018";
-    ctx.fillRect(-6, -9, 4, 5);
-    ctx.fillRect(2, -9, 4, 5);
-    ctx.fillStyle = "#f4d35e";
-    ctx.fillRect(-5, -8, 2, 2);
-    ctx.fillRect(3, -8, 2, 2);
-    ctx.fillStyle = "#35552e";
-    ctx.fillRect(-6, 3, 12, 4);
-  } else if (enemy.kind === "spitter") {
-    const mouth = 3 + Math.max(0, Math.sin(t)) * 5;
-    ctx.strokeStyle = flash ? "#fff" : "#614b91";
-    ctx.lineWidth = 3;
-    for (let i = 0; i < 5; i++) {
-      const angle = (i / 5) * Math.PI * 2 + time * .7;
-      ctx.beginPath();
-      ctx.moveTo(Math.cos(angle) * 8, Math.sin(angle) * 8);
-      ctx.lineTo(Math.cos(angle) * 16, Math.sin(angle) * 16);
-      ctx.stroke();
-    }
-    ctx.fillStyle = flash ? "#fff" : "#a78bfa";
-    ctx.fillRect(-12, -12, 24, 24);
-    ctx.fillStyle = "#d8ccff";
-    ctx.fillRect(-7, -8, 14, 8);
-    ctx.fillStyle = "#201632";
-    ctx.fillRect(-3, -6, 6, 5);
-    ctx.fillRect(-6, 3, 12, mouth);
-    ctx.fillStyle = "#ff8fab";
-    ctx.fillRect(-3, 5, 6, Math.max(1, mouth - 3));
-  } else if (enemy.kind === "warden") {
-    const arm = Math.sin(t) * 3;
-    ctx.fillStyle = flash ? "#fff" : "#6e2d13";
-    ctx.fillRect(-17, -7 + arm, 7, 19);
-    ctx.fillRect(10, -7 - arm, 7, 19);
-    ctx.fillStyle = flash ? "#fff" : "#f97316";
-    ctx.fillRect(-12, -12, 24, 26);
-    ctx.fillStyle = "#ffc27a";
-    ctx.fillRect(-9, -16, 18, 10);
-    ctx.fillStyle = "#4a1d0d";
-    ctx.fillRect(-13, -18, 6, 8);
-    ctx.fillRect(7, -18, 6, 8);
-    ctx.fillRect(-7, -11, 5, 4);
-    ctx.fillRect(2, -11, 5, 4);
-    ctx.fillStyle = "#f4d35e";
-    ctx.fillRect(-9, 1, 18, 5);
-    ctx.fillStyle = "#513323";
-    ctx.fillRect(13, -2 - arm, 7, 22);
-  } else if (enemy.kind === "healer") {
-    ctx.fillStyle = flash ? "#fff" : "#34d399";
-    ctx.fillRect(-11, -13, 22, 27);
-    ctx.fillStyle = "#d5fff0";
-    ctx.fillRect(-7, -17, 14, 8);
-    ctx.fillStyle = "#0b3b2b";
-    ctx.fillRect(-3, -12, 6, 18);
-    ctx.fillRect(-8, -6, 16, 6);
-    ctx.strokeStyle = "rgba(52,211,153,.6)";
+    ctx.strokeStyle = flash ? "#fff" : "#7ddf64";
     ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(0, 0, 18 + Math.sin(t) * 3, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-5, -12); ctx.lineTo(-11, -20); ctx.lineTo(-15, -19); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(5, -12); ctx.lineTo(11, -20); ctx.lineTo(15, -19); ctx.stroke();
+    ctx.fillStyle = flash ? "#fff" : "#325d37";
+    ctx.fillRect(-12, -3, 24, 15);
+    ctx.fillStyle = flash ? "#fff" : "#4f9a4a";
+    ctx.fillRect(-10, -7, 20, 13);
+    ctx.fillStyle = flash ? "#fff" : "#8bea72";
+    ctx.fillRect(-8, -14, 16, 11);
+    ctx.fillRect(-11, -9, 5, 8);
+    ctx.fillRect(6, -9, 5, 8);
+    ctx.fillStyle = "#182018";
+    ctx.fillRect(-6, -11, 4, 4); ctx.fillRect(2, -11, 4, 4);
+    ctx.fillStyle = "#f4d35e";
+    ctx.fillRect(-5, -10, 2, 2); ctx.fillRect(3, -10, 2, 2);
+    ctx.fillStyle = "#b8ff9f";
+    ctx.fillRect(-9, 0, 18, 3);
+    ctx.fillStyle = "#203f28";
+    ctx.fillRect(-2, -6, 4, 17);
+    ctx.fillRect(-7, 7, 14, 3);
+  } else if (enemy.kind === "spitter") {
+    const tentacle = Math.sin(t) * 3;
+    ctx.strokeStyle = flash ? "#fff" : "#60458f";
+    ctx.lineWidth = 4;
+    [-10, -4, 4, 10].forEach((offset, index) => {
+      ctx.beginPath(); ctx.moveTo(offset, 7); ctx.lineTo(offset + (index < 2 ? -4 : 4), 15 + tentacle * (index % 2 ? -1 : 1)); ctx.lineTo(offset + (index < 2 ? -8 : 8), 18); ctx.stroke();
+    });
+    ctx.fillStyle = flash ? "#fff" : "#654aa0";
+    ctx.fillRect(-13, -7, 26, 16);
+    ctx.fillStyle = flash ? "#fff" : "#a78bfa";
+    ctx.fillRect(-10, -14, 20, 21);
+    ctx.fillRect(-13, -8, 26, 10);
+    ctx.fillStyle = "#dcd3ff";
+    ctx.fillRect(-7, -10, 14, 7);
+    ctx.fillStyle = "#24173a";
+    ctx.fillRect(-4, -9, 8, 6);
+    ctx.fillStyle = "#ff4d9a";
+    ctx.fillRect(-2, -8, 4, 4);
+    ctx.fillStyle = flash ? "#fff" : "#493270";
+    ctx.fillRect(-7, 1, 14, 8);
+    ctx.fillStyle = "#181020";
+    ctx.fillRect(-4, 3, 8, 5);
+    ctx.fillStyle = "#ff8fab";
+    ctx.fillRect(-2, 7, 4, 5 + Math.max(0, Math.sin(t)) * 3);
+    ctx.fillStyle = "#d8ccff";
+    ctx.fillRect(-13, -2, 4, 3); ctx.fillRect(9, -2, 4, 3);
+  } else if (enemy.kind === "warden") {
+    const arm = Math.sin(t) * 2;
+    ctx.fillStyle = flash ? "#fff" : "#512416";
+    ctx.fillRect(-20, -7 + arm, 8, 24); ctx.fillRect(12, -7 - arm, 8, 24);
+    ctx.fillStyle = flash ? "#fff" : "#a43e17";
+    ctx.fillRect(-17, -12, 9, 11); ctx.fillRect(8, -12, 9, 11);
+    ctx.fillStyle = flash ? "#fff" : "#e65d18";
+    ctx.fillRect(-13, -10, 26, 27);
+    ctx.fillStyle = "#ff9d3d";
+    ctx.fillRect(-10, -17, 20, 13);
+    ctx.fillStyle = "#4a1d0d";
+    ctx.fillRect(-14, -21, 6, 10); ctx.fillRect(8, -21, 6, 10);
+    ctx.fillRect(-8, -13, 16, 5);
+    ctx.fillStyle = "#ffd06e";
+    ctx.fillRect(-6, -11, 4, 3); ctx.fillRect(2, -11, 4, 3);
+    ctx.fillStyle = "#6e2d13";
+    ctx.fillRect(-9, -1, 18, 12);
+    ctx.fillStyle = "#f4d35e";
+    ctx.fillRect(-11, 2, 22, 4); ctx.fillRect(-3, 6, 6, 10);
+    ctx.fillStyle = "#37251e";
+    ctx.fillRect(16, -3 - arm, 6, 24); ctx.fillRect(12, 13 - arm, 14, 7);
+    ctx.fillStyle = "#7c8b85";
+    ctx.fillRect(-24, -5 + arm, 8, 24); ctx.fillRect(-27, 1 + arm, 14, 12);
+  } else if (enemy.kind === "healer") {
+    const orbit = time * 2.4;
+    ctx.strokeStyle = flash ? "#fff" : "rgba(52,211,153,.55)";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 0, 19 + Math.sin(t) * 2, 0, Math.PI * 2); ctx.stroke();
+    for (let i = 0; i < 2; i++) {
+      const angle = orbit + i * Math.PI;
+      ctx.fillStyle = flash ? "#fff" : "#8fffd0";
+      ctx.fillRect(Math.cos(angle) * 18 - 3, Math.sin(angle) * 10 - 3, 6, 6);
+    }
+    ctx.fillStyle = flash ? "#fff" : "#176a51";
+    ctx.fillRect(-13, -7, 26, 20);
+    ctx.fillStyle = flash ? "#fff" : "#34d399";
+    ctx.fillRect(-10, -16, 20, 22);
+    ctx.fillRect(-14, -10, 5, 13); ctx.fillRect(9, -10, 5, 13);
+    ctx.fillStyle = "#d5fff0";
+    ctx.fillRect(-7, -13, 14, 8);
+    ctx.fillStyle = "#092b20";
+    ctx.fillRect(-5, -11, 10, 5);
+    ctx.fillStyle = "#76c7dc";
+    ctx.fillRect(-3, -10, 6, 3);
+    ctx.fillStyle = "#eafff7";
+    ctx.fillRect(-3, -2, 6, 15); ctx.fillRect(-8, 3, 16, 6);
+    ctx.fillStyle = "#1a4a3a";
+    ctx.fillRect(-6, 11, 12, 5);
+    ctx.fillStyle = "#f4d35e";
+    ctx.fillRect(-2, -21, 4, 6); ctx.fillRect(1, -22, 6, 3);
   } else if (enemy.kind === "mimic") {
-    const mouth = 5 + Math.abs(Math.sin(t)) * 8;
-    ctx.fillStyle = flash ? "#fff" : "#b7791f";
-    ctx.fillRect(-15, -13, 30, 26);
-    ctx.fillStyle = "#f4d35e";
-    ctx.fillRect(-13, -11, 26, 6);
-    ctx.fillStyle = "#260d0d";
-    ctx.fillRect(-12, 1, 24, mouth);
+    const jaw = 5 + Math.abs(Math.sin(t)) * 6;
+    const foot = Math.sin(t) * 3;
+    ctx.fillStyle = flash ? "#fff" : "#5d3719";
+    ctx.fillRect(-13, 10, 7, 8 + foot); ctx.fillRect(6, 10, 7, 8 - foot);
+    ctx.fillStyle = flash ? "#fff" : "#8a521f";
+    ctx.fillRect(-17, -1, 34, 17);
+    ctx.fillStyle = "#2a0d0d";
+    ctx.fillRect(-14, 2, 28, jaw + 5);
     ctx.fillStyle = "#fff3b0";
-    for (let tooth = -9; tooth <= 9; tooth += 6) ctx.fillRect(tooth, 1, 3, 5);
+    for (let tooth = -11; tooth <= 8; tooth += 6) { ctx.fillRect(tooth, 2, 4, 5); ctx.fillRect(tooth + 3, 7 + jaw, 4, 4); }
     ctx.fillStyle = "#ff4d6d";
-    ctx.fillRect(-7, -8, 5, 4);
-    ctx.fillRect(3, -8, 5, 4);
-  } else if (enemy.kind === "volatile") {
-    const pulse = 1 + Math.sin(t * 1.6) * .12;
-    ctx.scale(pulse, pulse);
-    ctx.fillStyle = flash ? "#fff" : "#ff8a3d";
-    ctx.beginPath();
-    ctx.arc(0, 0, 13, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#3b1208";
-    ctx.fillRect(-7, -4, 5, 5);
-    ctx.fillRect(3, -4, 5, 5);
+    ctx.fillRect(-5, 8, 10, 8 + jaw);
+    ctx.fillStyle = flash ? "#fff" : "#b7791f";
+    ctx.fillRect(-16, -15, 32, 15);
     ctx.fillStyle = "#f4d35e";
-    ctx.fillRect(-3, 4, 6, 5);
+    ctx.fillRect(-14, -13, 28, 5); ctx.fillRect(-3, -16, 6, 11);
+    ctx.fillStyle = "#3a1711";
+    ctx.fillRect(-10, -7, 7, 5); ctx.fillRect(3, -7, 7, 5);
+    ctx.fillStyle = "#ff8fab";
+    ctx.fillRect(-8, -6, 3, 3); ctx.fillRect(5, -6, 3, 3);
+    ctx.fillStyle = "#d69b39";
+    ctx.fillRect(-20, -3, 5, 14); ctx.fillRect(15, -3, 5, 14);
+  } else if (enemy.kind === "volatile") {
+    const pulse = 1 + Math.sin(t * 1.6) * .09;
+    ctx.scale(pulse, pulse);
+    ctx.fillStyle = flash ? "#fff" : "#7a2619";
+    ctx.fillRect(-10, 8, 7, 8); ctx.fillRect(3, 8, 7, 8);
+    ctx.fillStyle = flash ? "#fff" : "#ff6b35";
+    ctx.fillRect(-13, -10, 26, 22);
+    ctx.fillRect(-10, -14, 20, 30);
+    ctx.fillStyle = "#ffad42";
+    ctx.fillRect(-9, -9, 18, 5); ctx.fillRect(-9, 4, 18, 5);
+    ctx.fillStyle = "#35110b";
+    ctx.fillRect(-7, -3, 5, 5); ctx.fillRect(3, -3, 5, 5);
+    ctx.fillRect(-3, 8, 6, 5);
+    ctx.fillStyle = "#fff3b0";
+    ctx.fillRect(-1, -12, 3, 7); ctx.fillRect(3, -9, 5, 3);
+    ctx.strokeStyle = "#35110b"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-7, 2); ctx.lineTo(-2, 5); ctx.lineTo(2, 0); ctx.lineTo(7, 3); ctx.stroke();
+    ctx.strokeStyle = "#f4d35e"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(5, -13); ctx.lineTo(10, -20); ctx.lineTo(14, -18); ctx.stroke();
+    ctx.fillStyle = Math.sin(t * 3) > 0 ? "#fff3b0" : "#ff4d6d";
+    ctx.fillRect(12, -21, 5, 5);
     ctx.strokeStyle = "#ff4d6d";
     ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(0, 0, 17 + Math.sin(t * 2) * 3, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, 19 + Math.sin(t * 2) * 3, 0, Math.PI * 2); ctx.stroke();
   } else {
     const pulse = 1 + Math.sin(t) * .06;
     ctx.scale(pulse, pulse);
     const fist = Math.sin(t * .7) * 4;
-    ctx.fillStyle = flash ? "#fff" : "#8f1f3b";
-    ctx.fillRect(-29, -8 + fist, 10, 31);
-    ctx.fillRect(19, -8 - fist, 10, 31);
+    ctx.strokeStyle = flash ? "#fff" : "#f4d35e"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(-10, -24); ctx.lineTo(-16, -33); ctx.lineTo(-20, -31); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(10, -24); ctx.lineTo(16, -33); ctx.lineTo(20, -31); ctx.stroke();
+    ctx.fillStyle = flash ? "#fff" : "#741b35";
+    ctx.fillRect(-31, -9 + fist, 12, 34); ctx.fillRect(19, -9 - fist, 12, 34);
     ctx.fillStyle = flash ? "#fff" : "#ff4d6d";
-    ctx.fillRect(-21, -21, 42, 44);
-    ctx.fillStyle = "#ff8fab";
-    ctx.fillRect(-15, -25, 8, 9);
-    ctx.fillRect(7, -25, 8, 9);
-    ctx.fillStyle = "#300914";
-    ctx.fillRect(-13, -10, 8, 7);
-    ctx.fillRect(5, -10, 8, 7);
+    ctx.fillRect(-21, -5, 42, 31);
+    ctx.fillStyle = "#8f1f3b";
+    ctx.fillRect(-25, -12, 12, 16); ctx.fillRect(13, -12, 12, 16);
+    ctx.fillStyle = flash ? "#fff" : "#353d3b";
+    ctx.fillRect(-19, -25, 38, 23);
+    ctx.fillStyle = "#18211e";
+    ctx.fillRect(-15, -21, 30, 15);
+    ctx.fillStyle = "#76c7dc";
+    ctx.fillRect(-11, -17, 7, 6); ctx.fillRect(4, -17, 7, 6);
+    ctx.fillStyle = "#ff4d6d";
+    ctx.fillRect(-9, -15, 3, 3); ctx.fillRect(6, -15, 3, 3);
     ctx.fillStyle = "#f4d35e";
-    ctx.fillRect(-10, -8, 3, 3);
-    ctx.fillRect(7, -8, 3, 3);
+    ctx.fillRect(-16, -2, 32, 5); ctx.fillRect(-5, 3, 10, 13);
     ctx.fillStyle = "#1b070d";
-    ctx.fillRect(-11, 7, 22, 7);
+    ctx.fillRect(-11, 18, 8, 10); ctx.fillRect(3, 18, 8, 10);
     ctx.fillStyle = "#fff3b0";
-    ctx.fillRect(-8, 7, 4, 4);
-    ctx.fillRect(4, 7, 4, 4);
-    ctx.fillStyle = "#f4d35e";
-    ctx.fillRect(-5, -1, 10, 10);
+    ctx.fillRect(-27, 18 + fist, 7, 7); ctx.fillRect(20, 18 - fist, 7, 7);
   }
   if (enemy.windup > 0) {
     ctx.strokeStyle = enemy.kind === "volatile" ? "#ff4d6d" : "#fff3b0";
