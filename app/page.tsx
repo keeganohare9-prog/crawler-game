@@ -22,6 +22,7 @@ type Enemy = {
   flash: number;
 };
 type Projectile = { x: number; y: number; vx: number; vy: number; life: number; damage: number };
+type Particle = { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; size: number };
 type Pylon = { x: number; y: number; active: boolean };
 type Chest = { x: number; y: number; open: boolean };
 type Trap = { x: number; y: number; phase: number };
@@ -43,9 +44,12 @@ type Game = {
     dodgeCd: number;
     invuln: number;
     potions: number;
+    moving: boolean;
+    stepTimer: number;
   };
   enemies: Enemy[];
   projectiles: Projectile[];
+  particles: Particle[];
   pylons: Pylon[];
   chests: Chest[];
   traps: Trap[];
@@ -60,6 +64,8 @@ type Game = {
   messageTime: number;
   elapsed: number;
   nextId: number;
+  shake: number;
+  hitStop: number;
 };
 
 type Hud = {
@@ -126,6 +132,8 @@ function makeGame(screen: Screen = "title"): Game {
       dodgeCd: 0,
       invuln: 0,
       potions: 2,
+      moving: false,
+      stepTimer: 0,
     },
     enemies: [
       enemy("skitter", 5, 5),
@@ -140,6 +148,7 @@ function makeGame(screen: Screen = "title"): Game {
       enemy("boss", 20, 4),
     ],
     projectiles: [],
+    particles: [],
     pylons: [
       { x: 6.5 * TILE, y: 2.5 * TILE, active: false },
       { x: 13.5 * TILE, y: 6.5 * TILE, active: false },
@@ -168,6 +177,8 @@ function makeGame(screen: Screen = "title"): Game {
     messageTime: 4,
     elapsed: 0,
     nextId,
+    shake: 0,
+    hitStop: 0,
   };
 }
 
@@ -190,6 +201,31 @@ function canMove(x: number, y: number, radius = 10) {
 
 function dist(a: { x: number; y: number }, b: { x: number; y: number }) {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function roomFor(x: number, y: number) {
+  return {
+    col: Math.max(0, Math.min(2, Math.floor(x / (8 * TILE)))),
+    row: Math.max(0, Math.min(1, Math.floor(y / (8 * TILE)))),
+  };
+}
+
+function burst(game: Game, x: number, y: number, color: string, count: number, speed = 80) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const force = speed * (0.35 + Math.random() * 0.65);
+    const life = 0.22 + Math.random() * 0.28;
+    game.particles.push({
+      x,
+      y,
+      vx: Math.cos(angle) * force,
+      vy: Math.sin(angle) * force,
+      life,
+      maxLife: life,
+      color,
+      size: 1.5 + Math.random() * 2.5,
+    });
+  }
 }
 
 function moveEntity(entity: { x: number; y: number }, vx: number, vy: number, dt: number, radius = 10) {
@@ -383,9 +419,365 @@ function renderGame(ctx: CanvasRenderingContext2D, game: Game) {
   }
 }
 
+function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: number) {
+  const t = time * (enemy.kind === "skitter" ? 13 : 7) + enemy.id;
+  const bob = Math.sin(t) * (enemy.kind === "boss" ? 1.2 : 1.7);
+  const squash = enemy.flash > 0 ? 1.18 : 1;
+  const flash = enemy.flash > 0;
+  ctx.save();
+  ctx.translate(Math.round(enemy.x), Math.round(enemy.y + bob));
+  ctx.scale(squash, 2 - squash);
+  ctx.fillStyle = "rgba(0,0,0,.5)";
+  ctx.fillRect(enemy.kind === "boss" ? -22 : -14, enemy.kind === "boss" ? 19 : 12, enemy.kind === "boss" ? 44 : 28, 5);
+
+  if (enemy.kind === "skitter") {
+    const leg = Math.sin(t) * 4;
+    ctx.strokeStyle = flash ? "#fff" : "#406b36";
+    ctx.lineWidth = 3;
+    for (let side = -1; side <= 1; side += 2) {
+      for (let i = -1; i <= 1; i++) {
+        ctx.beginPath();
+        ctx.moveTo(side * 7, i * 5);
+        ctx.lineTo(side * (15 + (i % 2) * leg), i * 8 + leg * side * .3);
+        ctx.stroke();
+      }
+    }
+    ctx.fillStyle = flash ? "#fff" : "#7ddf64";
+    ctx.fillRect(-10, -11, 20, 22);
+    ctx.fillStyle = flash ? "#fff" : "#a6f58f";
+    ctx.fillRect(-7, -14, 14, 8);
+    ctx.fillStyle = "#182018";
+    ctx.fillRect(-6, -9, 4, 5);
+    ctx.fillRect(2, -9, 4, 5);
+    ctx.fillStyle = "#f4d35e";
+    ctx.fillRect(-5, -8, 2, 2);
+    ctx.fillRect(3, -8, 2, 2);
+    ctx.fillStyle = "#35552e";
+    ctx.fillRect(-6, 3, 12, 4);
+  } else if (enemy.kind === "spitter") {
+    const mouth = 3 + Math.max(0, Math.sin(t)) * 5;
+    ctx.strokeStyle = flash ? "#fff" : "#614b91";
+    ctx.lineWidth = 3;
+    for (let i = 0; i < 5; i++) {
+      const angle = (i / 5) * Math.PI * 2 + time * .7;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(angle) * 8, Math.sin(angle) * 8);
+      ctx.lineTo(Math.cos(angle) * 16, Math.sin(angle) * 16);
+      ctx.stroke();
+    }
+    ctx.fillStyle = flash ? "#fff" : "#a78bfa";
+    ctx.fillRect(-12, -12, 24, 24);
+    ctx.fillStyle = "#d8ccff";
+    ctx.fillRect(-7, -8, 14, 8);
+    ctx.fillStyle = "#201632";
+    ctx.fillRect(-3, -6, 6, 5);
+    ctx.fillRect(-6, 3, 12, mouth);
+    ctx.fillStyle = "#ff8fab";
+    ctx.fillRect(-3, 5, 6, Math.max(1, mouth - 3));
+  } else if (enemy.kind === "warden") {
+    const arm = Math.sin(t) * 3;
+    ctx.fillStyle = flash ? "#fff" : "#6e2d13";
+    ctx.fillRect(-17, -7 + arm, 7, 19);
+    ctx.fillRect(10, -7 - arm, 7, 19);
+    ctx.fillStyle = flash ? "#fff" : "#f97316";
+    ctx.fillRect(-12, -12, 24, 26);
+    ctx.fillStyle = "#ffc27a";
+    ctx.fillRect(-9, -16, 18, 10);
+    ctx.fillStyle = "#4a1d0d";
+    ctx.fillRect(-13, -18, 6, 8);
+    ctx.fillRect(7, -18, 6, 8);
+    ctx.fillRect(-7, -11, 5, 4);
+    ctx.fillRect(2, -11, 5, 4);
+    ctx.fillStyle = "#f4d35e";
+    ctx.fillRect(-9, 1, 18, 5);
+    ctx.fillStyle = "#513323";
+    ctx.fillRect(13, -2 - arm, 7, 22);
+  } else {
+    const pulse = 1 + Math.sin(t) * .06;
+    ctx.scale(pulse, pulse);
+    const fist = Math.sin(t * .7) * 4;
+    ctx.fillStyle = flash ? "#fff" : "#8f1f3b";
+    ctx.fillRect(-29, -8 + fist, 10, 31);
+    ctx.fillRect(19, -8 - fist, 10, 31);
+    ctx.fillStyle = flash ? "#fff" : "#ff4d6d";
+    ctx.fillRect(-21, -21, 42, 44);
+    ctx.fillStyle = "#ff8fab";
+    ctx.fillRect(-15, -25, 8, 9);
+    ctx.fillRect(7, -25, 8, 9);
+    ctx.fillStyle = "#300914";
+    ctx.fillRect(-13, -10, 8, 7);
+    ctx.fillRect(5, -10, 8, 7);
+    ctx.fillStyle = "#f4d35e";
+    ctx.fillRect(-10, -8, 3, 3);
+    ctx.fillRect(7, -8, 3, 3);
+    ctx.fillStyle = "#1b070d";
+    ctx.fillRect(-11, 7, 22, 7);
+    ctx.fillStyle = "#fff3b0";
+    ctx.fillRect(-8, 7, 4, 4);
+    ctx.fillRect(4, 7, 4, 4);
+    ctx.fillStyle = "#f4d35e";
+    ctx.fillRect(-5, -1, 10, 10);
+  }
+  ctx.restore();
+
+  const barW = enemy.kind === "boss" ? 46 : 28;
+  const barY = enemy.y - (enemy.kind === "boss" ? 34 : 24);
+  ctx.fillStyle = "#351419";
+  ctx.fillRect(enemy.x - barW / 2, barY, barW, 4);
+  ctx.fillStyle = "#ff4d6d";
+  ctx.fillRect(enemy.x - barW / 2, barY, barW * (enemy.hp / enemy.maxHp), 4);
+}
+
+function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
+  const p = game.player;
+  const stride = p.moving ? Math.sin(game.elapsed * 13) : 0;
+  const bob = p.moving ? Math.abs(stride) * -2 : Math.sin(game.elapsed * 3) * .5;
+  const facingAngle = Math.atan2(p.dirY, p.dirX);
+  ctx.save();
+  ctx.translate(Math.round(p.x), Math.round(p.y + bob));
+  if (game.shake > 0) ctx.rotate(Math.sin(game.elapsed * 80) * .035);
+  ctx.fillStyle = "rgba(0,0,0,.55)";
+  ctx.fillRect(-14, 13 - bob, 28, 6);
+
+  if (p.invuln <= 0 || Math.floor(game.elapsed * 20) % 2 === 0) {
+    // Animated boots and trailing scarf.
+    ctx.fillStyle = "#392b28";
+    ctx.fillRect(-9, 7 + stride * 2, 7, 10);
+    ctx.fillRect(2, 7 - stride * 2, 7, 10);
+    ctx.fillStyle = "#ff4d6d";
+    ctx.fillRect(-16 - p.dirX * 4, -3 - p.dirY * 4 + stride, 13, 6);
+    ctx.fillRect(-20 - p.dirX * 5, 1 - p.dirY * 5 - stride, 8, 5);
+    // Coat and belt.
+    ctx.fillStyle = "#3b82a0";
+    ctx.fillRect(-10, -8, 20, 22);
+    ctx.fillStyle = "#76c7dc";
+    ctx.fillRect(-7, -6, 5, 14);
+    ctx.fillStyle = "#f4d35e";
+    ctx.fillRect(-11, 5, 22, 5);
+    ctx.fillStyle = "#513b20";
+    ctx.fillRect(-2, 5, 5, 5);
+    // Head, hair, and expressive eyes.
+    ctx.fillStyle = "#f0c7a5";
+    ctx.fillRect(-9, -18, 18, 13);
+    ctx.fillStyle = "#6b3f2b";
+    ctx.fillRect(-10, -20, 20, 6);
+    ctx.fillRect(-10, -16, 5, 5);
+    ctx.fillStyle = "#17201e";
+    if (Math.abs(p.dirX) >= Math.abs(p.dirY)) {
+      const eyeX = p.dirX > 0 ? 3 : -6;
+      ctx.fillRect(eyeX, -13, 3, 3);
+      ctx.fillRect(eyeX + (p.dirX > 0 ? 4 : -4), -13, 3, 3);
+    } else {
+      ctx.fillRect(-5, -13, 3, 3);
+      ctx.fillRect(3, -13, 3, 3);
+    }
+    ctx.fillStyle = "#8b4d3b";
+    ctx.fillRect(-3, -8, 6, 2);
+  }
+
+  // Directional sword with a wide, readable swing.
+  const swingProgress = p.attackFx > 0 ? 1 - p.attackFx / .2 : 1;
+  const swordAngle = p.attackFx > 0 ? facingAngle - 1.45 + swingProgress * 2.55 : facingAngle + .18;
+  ctx.rotate(swordAngle);
+  ctx.fillStyle = "#6b4d22";
+  ctx.fillRect(7, -3, 8, 6);
+  ctx.fillStyle = "#f4d35e";
+  ctx.fillRect(13, -5, 5, 10);
+  ctx.fillStyle = "#dce7e4";
+  ctx.fillRect(18, -3, 24, 6);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(21, -2, 19, 2);
+  ctx.fillStyle = "#80918b";
+  ctx.fillRect(38, -3, 6, 6);
+  ctx.restore();
+
+  if (p.attackFx > 0) {
+    ctx.strokeStyle = `rgba(255,243,176,${Math.min(1, p.attackFx * 6)})`;
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 38, facingAngle - 1.3, facingAngle + 1.2);
+    ctx.stroke();
+  }
+}
+
+function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = "#050706";
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+  const current = roomFor(game.player.x, game.player.y);
+  const roomNumber = current.row * 3 + current.col + 1;
+  const camX = current.col * 8 * TILE + 4 * TILE;
+  const camY = current.row * 8 * TILE + 4 * TILE;
+  const shakeX = game.shake > 0 ? (Math.random() - .5) * 7 : 0;
+  const shakeY = game.shake > 0 ? (Math.random() - .5) * 7 : 0;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(128, 0, 512, 512);
+  ctx.clip();
+  ctx.setTransform(2, 0, 0, 2, WIDTH / 2 - camX * 2 + shakeX, HEIGHT / 2 - camY * 2 + shakeY);
+
+  for (let ty = 0; ty < MAP_H; ty++) {
+    for (let tx = 0; tx < MAP_W; tx++) {
+      const wall = isWallTile(tx, ty);
+      if (wall) {
+        ctx.fillStyle = (tx + ty) % 2 ? "#26312d" : "#303b36";
+        ctx.fillRect(tx * TILE, ty * TILE, TILE, TILE);
+        ctx.fillStyle = "#53645d";
+        ctx.fillRect(tx * TILE + 2, ty * TILE + 2, TILE - 4, 5);
+        ctx.fillStyle = "#18201d";
+        ctx.fillRect(tx * TILE + 4, ty * TILE + 21, TILE - 8, 8);
+        ctx.fillStyle = "#394741";
+        ctx.fillRect(tx * TILE + 4, ty * TILE + 10, 11, 3);
+      } else {
+        ctx.fillStyle = (tx + ty) % 2 ? "#101a17" : "#14201c";
+        ctx.fillRect(tx * TILE, ty * TILE, TILE, TILE);
+        ctx.strokeStyle = "#1d2c27";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(tx * TILE + .5, ty * TILE + .5, TILE - 1, TILE - 1);
+        ctx.fillStyle = "#284138";
+        ctx.fillRect(tx * TILE + 4, ty * TILE + 5, 3, 2);
+        ctx.fillRect(tx * TILE + 25, ty * TILE + 24, 3, 3);
+      }
+    }
+  }
+
+  const centerX = (current.col * 8 + 4) * TILE;
+  const centerY = (current.row * 8 + 4) * TILE;
+  ctx.strokeStyle = "#2c4a40";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(centerX - 46, centerY - 46, 92, 92);
+  drawPixelText(ctx, `SIGNAL ROOM 0${roomNumber}`, centerX, centerY - 51, "#5a8876", "center");
+
+  const safeX = 12.5 * TILE;
+  const safeY = 12.5 * TILE;
+  ctx.fillStyle = game.safeUsed ? "#29433c" : "#34d399";
+  ctx.fillRect(safeX - 20, safeY - 20, 40, 40);
+  ctx.fillStyle = "#0b1713";
+  ctx.fillRect(safeX - 13, safeY - 5, 26, 10);
+  ctx.fillRect(safeX - 5, safeY - 13, 10, 26);
+
+  const gateOpen = game.bossDead;
+  ctx.fillStyle = gateOpen ? "#34d399" : "#ef4444";
+  ctx.fillRect(22 * TILE + 3, 14 * TILE + 3, 26, 26);
+  ctx.fillStyle = "#06100c";
+  ctx.fillRect(22 * TILE + 10, 14 * TILE + 8, 12, 18);
+  if (!gateOpen) ctx.fillRect(22 * TILE + 5, 14 * TILE + 13, 22, 5);
+
+  game.traps.forEach((trap) => {
+    const active = (game.elapsed + trap.phase) % 1.5 < .72;
+    ctx.fillStyle = active ? "#ef4444" : "#3b2828";
+    ctx.fillRect(trap.x - 13, trap.y - 13, 26, 26);
+    ctx.fillStyle = active ? "#fca5a5" : "#6b3f3f";
+    for (let i = -8; i <= 8; i += 8) {
+      ctx.beginPath();
+      ctx.moveTo(trap.x + i - 3, trap.y + 8);
+      ctx.lineTo(trap.x + i, trap.y - 8);
+      ctx.lineTo(trap.x + i + 3, trap.y + 8);
+      ctx.fill();
+    }
+  });
+
+  game.pylons.forEach((pylon) => {
+    const wave = Math.sin(game.elapsed * 5) * 3;
+    ctx.fillStyle = pylon.active ? "#f4d35e" : "#7b5c20";
+    ctx.fillRect(pylon.x - 8, pylon.y - 18, 16, 36);
+    ctx.fillStyle = pylon.active ? "#fff3b0" : "#312a1c";
+    ctx.fillRect(pylon.x - 14, pylon.y - 22, 28, 8);
+    if (pylon.active) {
+      ctx.strokeStyle = "rgba(244,211,94,.38)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(pylon.x, pylon.y, 23 + wave, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  });
+
+  game.chests.forEach((chest) => {
+    const bounce = chest.open ? 0 : Math.sin(game.elapsed * 4) * 1.2;
+    ctx.fillStyle = chest.open ? "#4a3420" : "#b7791f";
+    ctx.fillRect(chest.x - 14, chest.y - 10 + bounce, 28, 20);
+    ctx.fillStyle = chest.open ? "#231a12" : "#f4d35e";
+    ctx.fillRect(chest.x - 2, chest.y - 3 + bounce, 5, 7);
+    if (chest.open) ctx.fillRect(chest.x - 12, chest.y - 14, 24, 4);
+  });
+
+  game.projectiles.forEach((shot) => {
+    ctx.fillStyle = "rgba(255,77,109,.28)";
+    ctx.fillRect(shot.x - 8, shot.y - 8, 16, 16);
+    ctx.fillStyle = "#ff6b6b";
+    ctx.fillRect(shot.x - 4, shot.y - 4, 8, 8);
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(shot.x - 2, shot.y - 2, 4, 4);
+  });
+
+  game.particles.forEach((particle) => {
+    ctx.globalAlpha = Math.max(0, particle.life / particle.maxLife);
+    ctx.fillStyle = particle.color;
+    ctx.fillRect(particle.x, particle.y, particle.size, particle.size);
+  });
+  ctx.globalAlpha = 1;
+
+  game.enemies.forEach((enemy) => drawEnemySprite(ctx, enemy, game.elapsed));
+  drawPlayerSprite(ctx, game);
+
+  const activePylons = game.pylons.filter((pylon) => pylon.active).length;
+  const boss = game.enemies.find((enemy) => enemy.kind === "boss");
+  if (boss && activePylons < 3) {
+    ctx.strokeStyle = "rgba(255,77,109,.78)";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(boss.x, boss.y, 32 + Math.sin(game.elapsed * 5) * 3, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  const p = game.player;
+  let prompt = "";
+  if (game.pylons.some((x) => !x.active && dist(x, p) < 42)) prompt = "[F] JACK IN";
+  else if (game.chests.some((x) => !x.open && dist(x, p) < 42)) prompt = "[F] CRACK CACHE";
+  else if (gateOpen && Math.hypot(p.x - 22.5 * TILE, p.y - 14.5 * TILE) < 44) prompt = "[F] EXIT FLOOR";
+  if (prompt) drawPixelText(ctx, prompt, p.x, p.y - 34, "#fff3b0", "center");
+  ctx.restore();
+
+  // The side bands are literal unknown space: only the occupied room is broadcast.
+  const shade = ctx.createLinearGradient(0, 0, 128, 0);
+  shade.addColorStop(0, "#020303");
+  shade.addColorStop(1, "#0a100e");
+  ctx.fillStyle = shade;
+  ctx.fillRect(0, 0, 128, HEIGHT);
+  ctx.save();
+  ctx.translate(WIDTH, 0);
+  ctx.scale(-1, 1);
+  ctx.fillRect(0, 0, 128, HEIGHT);
+  ctx.restore();
+  ctx.strokeStyle = "#3b554c";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(128, 1, 512, 510);
+  drawPixelText(ctx, `ROOM 0${roomNumber}`, 66, 42, "#f4d35e", "center");
+  drawPixelText(ctx, "UNKNOWN", 702, 42, "#52645d", "center");
+  ctx.save();
+  ctx.translate(68, HEIGHT / 2);
+  ctx.rotate(-Math.PI / 2);
+  drawPixelText(ctx, "NO SIGNAL BEYOND THIS ROOM", 0, 0, "#34463f", "center");
+  ctx.restore();
+
+  if (game.screen === "paused") {
+    ctx.fillStyle = "rgba(4,6,6,.78)";
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+    drawPixelText(ctx, "TRANSMISSION PAUSED", WIDTH / 2, HEIGHT / 2, "#f4d35e", "center");
+  }
+}
+
 function updateGame(game: Game, keys: Set<string>, dt: number) {
   if (game.screen !== "playing") return;
   game.elapsed += dt;
+  game.shake = Math.max(0, game.shake - dt);
+  if (game.hitStop > 0) {
+    game.hitStop = Math.max(0, game.hitStop - dt);
+    return;
+  }
   game.time = Math.max(0, game.time - dt);
   game.messageTime = Math.max(0, game.messageTime - dt);
   const p = game.player;
@@ -393,7 +785,17 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
   p.attackFx = Math.max(0, p.attackFx - dt);
   p.dodgeCd = Math.max(0, p.dodgeCd - dt);
   p.invuln = Math.max(0, p.invuln - dt);
+  p.stepTimer = Math.max(0, p.stepTimer - dt);
   p.stamina = Math.min(100, p.stamina + dt * 24);
+
+  game.particles = game.particles.filter((particle) => {
+    particle.life -= dt;
+    particle.x += particle.vx * dt;
+    particle.y += particle.vy * dt;
+    particle.vx *= .93;
+    particle.vy *= .93;
+    return particle.life > 0;
+  });
 
   let mx = 0;
   let my = 0;
@@ -408,7 +810,12 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     p.dirX = mx;
     p.dirY = my;
   }
+  p.moving = Boolean(mx || my);
   moveEntity(p, mx * p.speed, my * p.speed, dt, 9);
+  if (p.moving && p.stepTimer <= 0) {
+    p.stepTimer = .13;
+    burst(game, p.x - p.dirX * 7, p.y - p.dirY * 7 + 10, "#607068", 2, 24);
+  }
 
   const roomId = `${Math.min(2, Math.floor(p.x / (8 * TILE)))},${Math.min(1, Math.floor(p.y / (8 * TILE)))}`;
   if (!game.explored.has(roomId)) {
@@ -432,15 +839,20 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     if (active && dist(trap, p) < 19 && p.invuln <= 0) {
       p.hp -= 12;
       p.invuln = 0.8;
+      game.shake = .18;
+      burst(game, p.x, p.y, "#ff4d6d", 8, 105);
       game.hype = Math.max(1, game.hype - 0.2);
       setMessage(game, "FLOOR SPIKES // THE AUDIENCE WINCES");
     }
   }
 
   const activePylons = game.pylons.filter((pylon) => pylon.active).length;
+  const playerRoom = roomFor(p.x, p.y);
   game.enemies.forEach((enemy) => {
     enemy.cooldown -= dt;
     enemy.flash = Math.max(0, enemy.flash - dt);
+    const enemyRoom = roomFor(enemy.x, enemy.y);
+    if (enemyRoom.col !== playerRoom.col || enemyRoom.row !== playerRoom.row) return;
     if (enemy.kind === "boss" && activePylons < 3) return;
     const dx = p.x - enemy.x;
     const dy = p.y - enemy.y;
@@ -460,6 +872,8 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
       if (distance < (enemy.kind === "boss" ? 31 : 24) && enemy.cooldown <= 0 && p.invuln <= 0) {
         p.hp -= enemy.damage;
         p.invuln = 0.65;
+        game.shake = enemy.kind === "boss" ? .28 : .16;
+        burst(game, p.x, p.y, "#ff8fab", enemy.kind === "boss" ? 12 : 7, 110);
         enemy.cooldown = enemy.kind === "boss" ? 0.75 : 1.05;
         game.hype = Math.max(1, game.hype - 0.1);
       }
@@ -480,6 +894,8 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     if (dist(shot, p) < 13 && p.invuln <= 0) {
       p.hp -= shot.damage;
       p.invuln = 0.65;
+      game.shake = .14;
+      burst(game, p.x, p.y, "#a78bfa", 7, 90);
       return false;
     }
     return true;
@@ -564,8 +980,9 @@ export default function Home() {
     if (game.screen !== "playing") return;
     const p = game.player;
     if (p.attackCd > 0) return;
-    p.attackCd = 0.32;
-    p.attackFx = 0.12;
+    p.attackCd = 0.34;
+    p.attackFx = 0.2;
+    burst(game, p.x + p.dirX * 24, p.y + p.dirY * 24, "#fff3b0", 3, 42);
     let hits = 0;
     game.enemies.forEach((enemy) => {
       const dx = enemy.x - p.x;
@@ -578,14 +995,16 @@ export default function Home() {
           return;
         }
         enemy.hp -= p.damage;
-        enemy.flash = 0.1;
+        enemy.flash = 0.14;
         enemy.x += p.dirX * 12;
         enemy.y += p.dirY * 12;
+        burst(game, enemy.x, enemy.y, enemy.kind === "boss" ? "#ff4d6d" : "#f4d35e", enemy.kind === "boss" ? 13 : 8, 120);
         hits++;
       }
     });
     const dead = game.enemies.filter((enemy) => enemy.hp <= 0);
     dead.forEach((enemy) => {
+      burst(game, enemy.x, enemy.y, enemy.kind === "boss" ? "#ff4d6d" : "#dce7e4", enemy.kind === "boss" ? 30 : 16, 160);
       game.kills++;
       game.hype = Math.min(5, game.hype + (enemy.kind === "boss" ? 1.4 : 0.22));
       game.score += Math.round((enemy.kind === "boss" ? 1600 : 140) * game.hype);
@@ -595,7 +1014,11 @@ export default function Home() {
       }
     });
     game.enemies = game.enemies.filter((enemy) => enemy.hp > 0);
-    if (hits) beep(96, 0.07);
+    if (hits) {
+      game.hitStop = .055;
+      game.shake = dead.length ? .24 : .12;
+      beep(96, 0.07);
+    }
     else beep(180, 0.035);
   }, [beep]);
 
@@ -607,6 +1030,8 @@ export default function Home() {
     p.invuln = 0.38;
     p.stamina -= 30;
     moveEntity(p, p.dirX * 390, p.dirY * 390, 0.11, 9);
+    burst(game, p.x - p.dirX * 16, p.y - p.dirY * 16, "#76c7dc", 11, 95);
+    game.shake = .08;
     beep(320, 0.05);
   }, [beep]);
 
@@ -616,6 +1041,7 @@ export default function Home() {
     if (game.screen !== "playing" || p.potions <= 0 || p.hp >= p.maxHp) return;
     p.potions--;
     p.hp = Math.min(p.maxHp, p.hp + 45);
+    burst(game, p.x, p.y, "#34d399", 14, 75);
     setMessage(game, "VITAL TONIC // +45 HEALTH");
     beep(520, 0.12);
   }, [beep]);
@@ -627,6 +1053,7 @@ export default function Home() {
     const pylon = game.pylons.find((x) => !x.active && dist(x, p) < 42);
     if (pylon) {
       pylon.active = true;
+      burst(game, pylon.x, pylon.y, "#f4d35e", 20, 115);
       const count = game.pylons.filter((x) => x.active).length;
       game.score += 280 * count;
       game.hype = Math.min(5, game.hype + 0.35);
@@ -637,6 +1064,7 @@ export default function Home() {
     const chest = game.chests.find((x) => !x.open && dist(x, p) < 42);
     if (chest) {
       chest.open = true;
+      burst(game, chest.x, chest.y, "#f4d35e", 14, 90);
       const upgrades = [
         () => { p.damage += 7; setMessage(game, "LOOT: UNLICENSED CLEAVER // +7 DAMAGE"); },
         () => { p.maxHp += 20; p.hp += 20; setMessage(game, "LOOT: PADDED PANIC VEST // +20 MAX HEALTH"); },
@@ -705,7 +1133,7 @@ export default function Home() {
       const game = gameRef.current;
       updateGame(game, keysRef.current, dt);
       const ctx = canvasRef.current?.getContext("2d");
-      if (ctx) renderGame(ctx, game);
+      if (ctx) renderGameV2(ctx, game);
       hudClock += dt;
       if (hudClock > 0.1) {
         hudClock = 0;
