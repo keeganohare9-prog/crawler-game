@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { generateFloor, type RoomKind } from "./game/floor";
 import { WEAPONS, getWeapon, selectWeaponDrop, type WeaponId } from "./game/combat-content";
-import { AUDIENCE_DARES, RUN_UPGRADES, bossPhaseForHealth, chooseAudienceDares, chooseSafeRoomUpgrades, newlyEarnedUnlocks, sponsorRewardsCrossed, summarizeRun, type RunStats, type RunUpgradeId } from "./game/progression";
+import { EQUIPMENT, EQUIPMENT_IDS, selectEquipmentDrop, type EquipmentId, type EquipmentSlot } from "./game/equipment";
+import { AUDIENCE_DARES, PERMANENT_UNLOCKS, RUN_UPGRADES, bossPhaseForHealth, chooseAudienceDares, chooseSafeRoomUpgrades, newlyEarnedUnlocks, sponsorRewardsCrossed, summarizeRun, type RunStats, type RunUpgradeId } from "./game/progression";
 
 const TILE = 32;
 const ROOM_COLS = 4;
@@ -36,10 +37,11 @@ type Enemy = {
 type Projectile = { x: number; y: number; vx: number; vy: number; life: number; damage: number; owner?: "enemy" | "player"; pierce?: number; weaponId?: WeaponId };
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; size: number };
 type Pylon = { x: number; y: number; active: boolean };
-type Chest = { x: number; y: number; open: boolean };
+type Chest = { x: number; y: number; open: boolean; openFx: number };
 type ItemKind = "tonic" | "bomb" | "fury";
 type GroundItem = { id: number; kind: ItemKind; x: number; y: number; phase: number };
 type GroundWeapon = { id: number; weaponId: WeaponId; x: number; y: number; phase: number };
+type GroundEquipment = { id: number; equipmentId: EquipmentId; x: number; y: number; phase: number };
 type Trap = { x: number; y: number; phase: number };
 type Screen = "title" | "playing" | "paused" | "upgrade" | "won" | "lost";
 type HelpSection = "mission" | "controls" | "arsenal" | "enemies" | "rooms";
@@ -75,6 +77,7 @@ type Game = {
   chests: Chest[];
   groundItems: GroundItem[];
   groundWeapons: GroundWeapon[];
+  groundEquipment: GroundEquipment[];
   traps: Trap[];
   explored: Set<string>;
   time: number;
@@ -105,6 +108,9 @@ type Game = {
   deathRoomKind: RoomKind | null;
   weaponAttacks: Record<WeaponId, number>;
   weaponHits: Record<WeaponId, number>;
+  equipped: Record<EquipmentSlot, EquipmentId | null>;
+  discoveredEquipment: EquipmentId[];
+  discoveredEnemies: EnemyKind[];
   maxHype: number;
   roomsCleared: number;
   lastBossPhase: string;
@@ -128,6 +134,8 @@ type Hud = {
   furyTime: number;
   weaponName: string;
   ammo: number;
+  nearbyEquipmentId: EquipmentId | null;
+  equipmentNames: string[];
   roomKind: RoomKind;
   roomsCleared: number;
   dareName: string;
@@ -136,6 +144,17 @@ type Hud = {
   message: string;
   objective: string;
 };
+
+type ArmorySnapshot = {
+  weapons: WeaponId[];
+  equipment: EquipmentId[];
+  enemies: EnemyKind[];
+  unlocks: string[];
+  runs: number;
+  kills: number;
+};
+
+const EMPTY_ARMORY: ArmorySnapshot = { weapons: ["cleaver"], equipment: [], enemies: [], unlocks: [], runs: 0, kills: 0 };
 
 const initialHud: Hud = {
   hp: 100,
@@ -152,6 +171,8 @@ const initialHud: Hud = {
   furyTime: 0,
   weaponName: "Signal Cleaver",
   ammo: 0,
+  nearbyEquipmentId: null,
+  equipmentNames: [],
   roomKind: "safe",
   roomsCleared: 0,
   dareName: "Personal Space Denied",
@@ -202,6 +223,14 @@ const ROOM_GUIDE: Array<{ kind: RoomKind; name: string; copy: string }> = [
   { kind: "boss", name: "Boss", copy: "The final arena. It stays sealed until all pylons are live." },
 ];
 
+function routeHint(kind: RoomKind) {
+  if (kind === "safe") return { icon: "+", label: "REST", color: "#34d399" };
+  if (["treasure", "broadcast"].includes(kind)) return { icon: "$", label: "REWARD", color: "#f4d35e" };
+  if (["elite", "boss", "survival"].includes(kind)) return { icon: "!", label: "DANGER", color: "#ff4d6d" };
+  if (kind === "puzzle") return { icon: "◆", label: "SIGNAL", color: "#76c7dc" };
+  return { icon: "?", label: "UNKNOWN", color: "#9aaba4" };
+}
+
 function makeGame(screen: Screen = "title", floorSeed = 40_413): Game {
   const floor = generateFloor(floorSeed, { roomCount: ROOM_COLS * ROOM_ROWS });
   const roomKinds = floor.rooms.map((room) => room.kind);
@@ -239,7 +268,7 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413): Game {
     if (kind === "puzzle") enemies.push(enemy("spitter", tx + 5, ty + 3, index));
     if (kind === "treasure") enemies.push(enemy("mimic", tx + 5, ty + 5, index));
     if (kind === "boss") enemies.push(enemy("boss", tx + 4, ty + 4, index, true));
-    if (["treasure", "elite", "broadcast"].includes(kind)) chests.push({ x: (tx + 2.5) * TILE, y: (ty + 5.5) * TILE, open: false });
+    if (["treasure", "elite", "broadcast"].includes(kind)) chests.push({ x: (tx + 2.5) * TILE, y: (ty + 5.5) * TILE, open: false, openFx: 0 });
     if (kind === "trap") {
       traps.push(
         { x: (tx + 3.5) * TILE, y: (ty + 3.5) * TILE, phase: 0 },
@@ -288,6 +317,7 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413): Game {
     chests,
     groundItems: [],
     groundWeapons: [],
+    groundEquipment: [],
     traps,
     explored: new Set(["0"]),
     time: 720,
@@ -318,6 +348,9 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413): Game {
     deathRoomKind: null,
     weaponAttacks: Object.fromEntries(Object.keys(WEAPONS).map((id) => [id, 0])) as Record<WeaponId, number>,
     weaponHits: Object.fromEntries(Object.keys(WEAPONS).map((id) => [id, 0])) as Record<WeaponId, number>,
+    equipped: { armor: null, boots: null, charm: null, mod: null },
+    discoveredEquipment: [],
+    discoveredEnemies: [],
     maxHype: 1,
     roomsCleared: 0,
     lastBossPhase: "",
@@ -436,7 +469,29 @@ function setMessage(game: Game, message: string) {
   game.messageTime = 3.2;
 }
 
+function hasEquipment(game: Game, id: EquipmentId) {
+  return Object.values(game.equipped).includes(id);
+}
+
+function equipItem(game: Game, id: EquipmentId) {
+  const item = EQUIPMENT[id];
+  const previous = game.equipped[item.slot];
+  if (previous === "scrap-plate") {
+    game.player.maxHp = Math.max(1, game.player.maxHp - 20);
+    game.player.hp = Math.min(game.player.hp, game.player.maxHp);
+  }
+  game.equipped[item.slot] = id;
+  if (id === "scrap-plate") {
+    game.player.maxHp += 20;
+    game.player.hp += 20;
+  }
+  if (!game.discoveredEquipment.includes(id)) game.discoveredEquipment.push(id);
+  return previous;
+}
+
 function hurtPlayer(game: Game, amount: number, source: string) {
+  if (source === "Void projectile" && hasEquipment(game, "shockweave-vest")) amount *= .75;
+  amount = Math.round(amount);
   game.player.hp -= amount;
   game.damageTaken += amount;
   game.damageBySource[source] = (game.damageBySource[source] ?? 0) + amount;
@@ -448,6 +503,7 @@ function creditEnemyDeaths(game: Game, dead: Enemy[]) {
     burst(game, enemy.x, enemy.y, "#f4d35e", enemy.kind === "boss" ? 18 : 7, 90);
     game.kills++;
     if (game.upgrades.includes("blood_broadcast") && game.player.hp / game.player.maxHp < .35) game.player.hp = Math.min(game.player.maxHp, game.player.hp + 2);
+    if (hasEquipment(game, "blood-token")) game.player.hp = Math.min(game.player.maxHp, game.player.hp + 3);
     game.hype += enemy.kind === "boss" ? 15 : 1.5;
     game.maxHype = Math.max(game.maxHype, game.hype);
     game.score += Math.round((enemy.kind === "boss" ? 1600 : 140) * game.hype);
@@ -602,6 +658,23 @@ function renderGame(ctx: CanvasRenderingContext2D, game: Game) {
     ctx.restore();
     ctx.shadowBlur = 0;
     drawPixelText(ctx, weapon.name.toUpperCase(), drop.x, drop.y - 20 + bob, color, "center");
+  });
+
+  game.groundEquipment.forEach((drop) => {
+    const bob = Math.sin(game.elapsed * 4 + drop.phase) * 3;
+    const item = EQUIPMENT[drop.equipmentId];
+    ctx.save();
+    ctx.translate(drop.x, drop.y + bob);
+    ctx.shadowColor = item.color; ctx.shadowBlur = 12;
+    ctx.fillStyle = item.color;
+    ctx.fillRect(-10, -10, 20, 20);
+    ctx.fillStyle = "#09100e";
+    if (item.slot === "armor") { ctx.fillRect(-6, -6, 12, 14); ctx.fillRect(-10, -5, 4, 7); ctx.fillRect(6, -5, 4, 7); }
+    if (item.slot === "boots") { ctx.fillRect(-8, -7, 6, 12); ctx.fillRect(2, -7, 6, 12); ctx.fillRect(-10, 3, 8, 4); ctx.fillRect(2, 3, 8, 4); }
+    if (item.slot === "charm") { ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI * 2); ctx.fill(); ctx.fillRect(-2, -10, 4, 5); }
+    if (item.slot === "mod") { ctx.fillRect(-7, -3, 14, 6); ctx.fillRect(-3, -7, 6, 14); }
+    ctx.restore();
+    drawPixelText(ctx, item.name.toUpperCase(), drop.x, drop.y - 21 + bob, item.color, "center");
   });
 
   game.projectiles.forEach((shot) => {
@@ -1096,24 +1169,30 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.strokeStyle = roomLocked ? "#ff8fab" : "#fff3b0";
   ctx.lineWidth = 2;
   if (current.col > 0) {
+    const hint = routeHint(game.roomKinds[currentRoomIndex - 1]);
     ctx.fillRect(roomLeft + 2, doorY - 24, 7, 48);
     ctx.strokeRect(roomLeft + 1, doorY - 27, 13, 54);
-    drawPixelText(ctx, "◀", roomLeft + 22, doorY + 4, "#fff3b0", "center");
+    drawPixelText(ctx, `◀ ${hint.icon}`, roomLeft + 28, doorY + 4, hint.color, "center");
+    drawPixelText(ctx, hint.label, roomLeft + 40, doorY - 12, hint.color, "center");
   }
   if (current.col < ROOM_COLS - 1) {
+    const hint = routeHint(game.roomKinds[currentRoomIndex + 1]);
     ctx.fillRect(roomLeft + 8 * TILE - 9, doorY - 24, 7, 48);
     ctx.strokeRect(roomLeft + 8 * TILE - 14, doorY - 27, 13, 54);
-    drawPixelText(ctx, "▶", roomLeft + 8 * TILE - 22, doorY + 4, "#fff3b0", "center");
+    drawPixelText(ctx, `${hint.icon} ▶`, roomLeft + 8 * TILE - 28, doorY + 4, hint.color, "center");
+    drawPixelText(ctx, hint.label, roomLeft + 8 * TILE - 40, doorY - 12, hint.color, "center");
   }
   if (current.row > 0) {
+    const hint = routeHint(game.roomKinds[currentRoomIndex - ROOM_COLS]);
     ctx.fillRect(doorX - 24, roomTop + 2, 48, 7);
     ctx.strokeRect(doorX - 27, roomTop + 1, 54, 13);
-    drawPixelText(ctx, "▲", doorX, roomTop + 27, "#fff3b0", "center");
+    drawPixelText(ctx, `▲ ${hint.icon} ${hint.label}`, doorX, roomTop + 27, hint.color, "center");
   }
   if (current.row < ROOM_ROWS - 1) {
+    const hint = routeHint(game.roomKinds[currentRoomIndex + ROOM_COLS]);
     ctx.fillRect(doorX - 24, roomTop + 8 * TILE - 9, 48, 7);
     ctx.strokeRect(doorX - 27, roomTop + 8 * TILE - 14, 54, 13);
-    drawPixelText(ctx, "▼", doorX, roomTop + 8 * TILE - 20, "#fff3b0", "center");
+    drawPixelText(ctx, `▼ ${hint.icon} ${hint.label}`, doorX, roomTop + 8 * TILE - 20, hint.color, "center");
   }
   ctx.restore();
 
@@ -1170,11 +1249,16 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
 
   game.chests.forEach((chest) => {
     const bounce = chest.open ? 0 : Math.sin(game.elapsed * 4) * 1.2;
+    const reveal = chest.openFx > 0 ? Math.sin((.8 - chest.openFx) * 10) * chest.openFx : 0;
+    if (chest.openFx > 0) {
+      ctx.fillStyle = `rgba(244,211,94,${chest.openFx * .22})`;
+      ctx.beginPath(); ctx.arc(chest.x, chest.y, 22 + (1 - chest.openFx) * 32, 0, Math.PI * 2); ctx.fill();
+    }
     ctx.fillStyle = chest.open ? "#4a3420" : "#b7791f";
     ctx.fillRect(chest.x - 14, chest.y - 10 + bounce, 28, 20);
     ctx.fillStyle = chest.open ? "#231a12" : "#f4d35e";
     ctx.fillRect(chest.x - 2, chest.y - 3 + bounce, 5, 7);
-    if (chest.open) ctx.fillRect(chest.x - 12, chest.y - 14, 24, 4);
+    if (chest.open) ctx.fillRect(chest.x - 12, chest.y - 14 - reveal * 10, 24, 4);
   });
 
   game.groundItems.forEach((item) => {
@@ -1259,7 +1343,9 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   let prompt = "";
   const nearbyItem = game.groundItems.find((item) => dist(item, p) < 38);
   const nearbyWeapon = game.groundWeapons.find((drop) => dist(drop, p) < 42);
-  if (nearbyWeapon) prompt = `[F] EQUIP ${getWeapon(nearbyWeapon.weaponId).name.toUpperCase()}`;
+  const nearbyEquipment = game.groundEquipment.find((drop) => dist(drop, p) < 42);
+  if (nearbyEquipment) prompt = `[HOLD F] EQUIP ${EQUIPMENT[nearbyEquipment.equipmentId].name.toUpperCase()}`;
+  else if (nearbyWeapon) prompt = `[F] EQUIP ${getWeapon(nearbyWeapon.weaponId).name.toUpperCase()}`;
   else if (nearbyItem) prompt = `[F] PICK UP ${nearbyItem.kind.toUpperCase()}`;
   else if (game.pylons.some((x) => !x.active && dist(x, p) < 42)) prompt = "[F] JACK IN";
   else if (game.chests.some((x) => !x.open && dist(x, p) < 42)) prompt = "[F] CRACK CACHE";
@@ -1323,6 +1409,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     particle.vy *= .93;
     return particle.life > 0;
   });
+  game.chests.forEach((chest) => { chest.openFx = Math.max(0, chest.openFx - dt); });
 
   const sponsorRewards = sponsorRewardsCrossed(game.sponsorHypeChecked, game.hype);
   game.sponsorHypeChecked = Math.max(game.sponsorHypeChecked, game.hype);
@@ -1359,7 +1446,8 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
   p.moving = Boolean(mx || my);
   const previousX = p.x;
   const previousY = p.y;
-  moveEntity(p, mx * p.speed, my * p.speed, dt, 9);
+  const equipmentSpeed = hasEquipment(game, "runner-boots") ? 1.1 : 1;
+  moveEntity(p, mx * p.speed * equipmentSpeed, my * p.speed * equipmentSpeed, dt, 9);
   if (p.moving && p.stepTimer <= 0) {
     p.stepTimer = .13;
     burst(game, p.x - p.dirX * 7, p.y - p.dirY * 7 + 10, "#607068", 2, 24);
@@ -1427,6 +1515,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     enemy.recovery = Math.max(0, enemy.recovery - dt);
     const enemyRoom = roomFor(enemy.x, enemy.y);
     if (enemyRoom.col !== playerRoom.col || enemyRoom.row !== playerRoom.row) return;
+    if (!game.discoveredEnemies.includes(enemy.kind)) game.discoveredEnemies.push(enemy.kind);
     if (enemy.kind === "boss" && activePylons < 3) return;
     const dx = p.x - enemy.x;
     const dy = p.y - enemy.y;
@@ -1638,6 +1727,8 @@ function makeHud(game: Game): Hud {
     furyTime: game.player.furyTime,
     weaponName: getWeapon(game.player.weaponId).name,
     ammo: game.player.ammo,
+    nearbyEquipmentId: game.groundEquipment.find((drop) => dist(drop, game.player) < 42)?.equipmentId ?? null,
+    equipmentNames: (Object.values(game.equipped).filter(Boolean) as EquipmentId[]).map((id) => EQUIPMENT[id].name),
     roomKind: game.roomKinds[game.currentRoomIndex] ?? "safe",
     roomsCleared: game.roomsCleared,
     dareName: dare.name,
@@ -1664,7 +1755,7 @@ function runStatsFor(game: Game): RunStats {
     highestHype: Math.round(game.maxHype),
     daresCompleted: game.dareComplete ? 1 : 0,
     secretsFound: 0,
-    lootValue: game.upgrades.length * 250 + game.groundWeapons.length * 120,
+    lootValue: game.upgrades.length * 250 + game.discoveredEquipment.length * 180 + game.groundWeapons.length * 120,
     remainingSeconds: Math.round(game.time),
     favoriteWeapon: getWeapon(game.player.weaponId).name,
   };
@@ -1675,11 +1766,15 @@ export default function Home() {
   const gameRef = useRef<Game>(makeGame());
   const keysRef = useRef(new Set<string>());
   const audioRef = useRef<AudioContext | null>(null);
+  const interactHoldTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [screen, setScreen] = useState<Screen>("title");
   const [hud, setHud] = useState<Hud>(() => makeHud(gameRef.current));
   const [highScore, setHighScore] = useState(0);
   const [helpOpen, setHelpOpen] = useState(false);
   const [helpSection, setHelpSection] = useState<HelpSection>("mission");
+  const [armoryOpen, setArmoryOpen] = useState(false);
+  const [armory, setArmory] = useState<ArmorySnapshot>(EMPTY_ARMORY);
+  const [starterWeapon, setStarterWeapon] = useState<WeaponId>("cleaver");
   const helpPreviousScreen = useRef<Screen | null>(null);
 
   const beep = useCallback((frequency = 220, duration = 0.06) => {
@@ -1715,6 +1810,14 @@ export default function Home() {
       localStorage.setItem("signal-depths-lifetime-runs", String(lifetimeRuns));
       localStorage.setItem("signal-depths-lifetime-kills", String(lifetimeKills));
       localStorage.setItem("signal-depths-unlocks", JSON.stringify([...storedUnlocks, ...earned.map((unlock) => unlock.id)]));
+      const merge = <T,>(stored: T[], found: T[]) => [...new Set([...stored, ...found])];
+      const storedWeapons = JSON.parse(localStorage.getItem("signal-depths-discovered-weapons") || "[\"cleaver\"]") as WeaponId[];
+      const storedEquipment = JSON.parse(localStorage.getItem("signal-depths-discovered-equipment") || "[]") as EquipmentId[];
+      const storedEnemies = JSON.parse(localStorage.getItem("signal-depths-discovered-enemies") || "[]") as EnemyKind[];
+      localStorage.setItem("signal-depths-discovered-weapons", JSON.stringify(merge(storedWeapons, [game.player.weaponId])));
+      localStorage.setItem("signal-depths-discovered-equipment", JSON.stringify(merge(storedEquipment, game.discoveredEquipment)));
+      localStorage.setItem("signal-depths-discovered-enemies", JSON.stringify(merge(storedEnemies, game.discoveredEnemies)));
+      setArmory({ weapons: merge(storedWeapons, [game.player.weaponId]), equipment: merge(storedEquipment, game.discoveredEquipment), enemies: merge(storedEnemies, game.discoveredEnemies), unlocks: merge(storedUnlocks, earned.map((unlock) => unlock.id)), runs: lifetimeRuns, kills: lifetimeKills });
       game.resultsSaved = true;
     }
     setScreen(game.screen);
@@ -1730,13 +1833,15 @@ export default function Home() {
 
   const startGame = useCallback(() => {
     const nextGame = makeGame("playing", Math.floor(Math.random() * 1_000_000_000));
+    nextGame.player.weaponId = starterWeapon;
+    nextGame.player.ammo = getWeapon(starterWeapon).ammo ?? 0;
     gameRef.current = nextGame;
     keysRef.current.clear();
     setScreen("playing");
     setHud(makeHud(nextGame));
     beep(164, 0.1);
     canvasRef.current?.focus();
-  }, [beep]);
+  }, [beep, starterWeapon]);
 
   const openHelp = useCallback(() => {
     const game = gameRef.current;
@@ -1791,7 +1896,8 @@ export default function Home() {
       beep(70, .05);
       return;
     }
-    p.attackCd = weapon.cooldownMs / 1000;
+    const servoBoost = hasEquipment(game, "razor-servo") && weapon.damageType === "slash" ? .85 : 1;
+    p.attackCd = (weapon.cooldownMs / 1000) * servoBoost;
     p.attackFx = p.weaponId === "hammer" ? .3 : p.weaponId === "spear" ? .24 : .2;
     game.weaponAttacks[p.weaponId]++;
     burst(game, p.x + p.dirX * 24, p.y + p.dirY * 24, "#fff3b0", 3, 42);
@@ -1814,15 +1920,18 @@ export default function Home() {
           setMessage(game, "WARDEN SHIELDED // FEED THE THREE SIGNALS");
           return;
         }
-        enemy.hp -= weapon.damage * weapon.attacksPerInput * (p.furyTime > 0 ? 1.75 : 1) * (game.upgrades.filter((id) => id === "razor_arc").length ? 1.1 : 1);
+        const hammerArmor = p.weaponId === "hammer" && game.equipped.armor ? 1.1 : 1;
+        const kinetic = p.weaponId === "hammer" && hasEquipment(game, "kinetic-brace") ? 1.3 : 1;
+        enemy.hp -= weapon.damage * weapon.attacksPerInput * hammerArmor * kinetic * (p.furyTime > 0 ? 1.75 : 1) * (game.upgrades.filter((id) => id === "razor_arc").length ? 1.1 : 1);
         enemy.flash = 0.14;
         enemy.x += p.dirX * weapon.knockback;
         enemy.y += p.dirY * weapon.knockback;
         burst(game, enemy.x, enemy.y, enemy.kind === "boss" ? "#ff4d6d" : "#f4d35e", enemy.kind === "boss" ? 13 : 8, 120);
         hits++;
         if (p.weaponId === "shock-baton") {
-          game.enemies.filter((candidate) => candidate.id !== enemy.id && dist(candidate, enemy) < 58).slice(0, 2).forEach((candidate) => {
-            candidate.hp -= weapon.damage * .65;
+          const stormCoil = hasEquipment(game, "storm-coil");
+          game.enemies.filter((candidate) => candidate.id !== enemy.id && dist(candidate, enemy) < (stormCoil ? 84 : 58)).slice(0, stormCoil ? 3 : 2).forEach((candidate) => {
+            candidate.hp -= weapon.damage * (stormCoil ? .85 : .65);
             candidate.flash = .14;
             burst(game, candidate.x, candidate.y, "#76c7dc", 7, 80);
           });
@@ -1830,6 +1939,10 @@ export default function Home() {
       }
     });
     game.weaponHits[p.weaponId] += hits;
+    if (hits && hasEquipment(game, "audience-eye") && (p.weaponId === "twin-knives" || weapon.cooldownMs <= 340)) {
+      game.hype += hits * .08;
+      game.maxHype = Math.max(game.maxHype, game.hype);
+    }
     const dead = game.enemies.filter((enemy) => enemy.hp <= 0);
     creditEnemyDeaths(game, dead);
     game.enemies = game.enemies.filter((enemy) => enemy.hp > 0);
@@ -1846,10 +1959,12 @@ export default function Home() {
     const game = gameRef.current;
     const p = game.player;
     if (game.screen !== "playing" || p.dodgeCd > 0 || p.stamina < 30) return;
-    p.dodgeCd = 0.65;
-    p.invuln = 0.38 + game.upgrades.filter((id) => id === "phase_steps").length * .08;
+    const phaseTreads = hasEquipment(game, "phase-treads");
+    p.dodgeCd = phaseTreads ? .55 : 0.65;
+    p.invuln = 0.38 + game.upgrades.filter((id) => id === "phase_steps").length * .08 + (phaseTreads ? .1 : 0);
     p.stamina -= 30;
-    moveEntity(p, p.dirX * 390 * (game.upgrades.includes("phase_steps") ? 1.2 : 1), p.dirY * 390 * (game.upgrades.includes("phase_steps") ? 1.2 : 1), 0.11, 9);
+    moveEntity(p, p.dirX * 390 * (game.upgrades.includes("phase_steps") ? 1.2 : 1) * (phaseTreads ? 1.2 : 1), p.dirY * 390 * (game.upgrades.includes("phase_steps") ? 1.2 : 1) * (phaseTreads ? 1.2 : 1), 0.11, 9);
+    if (hasEquipment(game, "iron-stompers")) game.enemies.filter((enemy) => dist(enemy, p) < 30).forEach((enemy) => { enemy.hp -= 12; enemy.flash = .16; burst(game, enemy.x, enemy.y, "#76c7dc", 8, 90); });
     burst(game, p.x - p.dirX * 16, p.y - p.dirY * 16, "#76c7dc", 11, 95);
     game.shake = .08;
     beep(320, 0.05);
@@ -1890,6 +2005,11 @@ export default function Home() {
         enemy.hp -= 55;
         enemy.flash = .2;
         burst(game, enemy.x, enemy.y, "#d9f7ff", 12, 135);
+        if (enemy.kind === "volatile" && hasEquipment(game, "volatile-heart")) {
+          burst(game, enemy.x, enemy.y, "#ff8a3d", 22, 175);
+          game.enemies.filter((other) => other.id !== enemy.id && dist(other, enemy) < 78).forEach((other) => { other.hp -= 35; other.flash = .2; });
+          enemy.hp = 0;
+        }
       }
     });
     const dead = game.enemies.filter((enemy) => enemy.hp <= 0);
@@ -1910,10 +2030,31 @@ export default function Home() {
     const game = gameRef.current;
     const p = game.player;
     if (game.screen !== "playing") return;
+    const equipmentDrop = game.groundEquipment.find((drop) => dist(drop, p) < 42);
+    if (equipmentDrop) {
+      const item = EQUIPMENT[equipmentDrop.equipmentId];
+      const previous = equipItem(game, item.id);
+      setArmory((current) => {
+        const equipment = [...new Set([...current.equipment, item.id])];
+        localStorage.setItem("signal-depths-discovered-equipment", JSON.stringify(equipment));
+        return { ...current, equipment };
+      });
+      game.groundEquipment = game.groundEquipment.filter((drop) => drop.id !== equipmentDrop.id);
+      if (previous !== item.id && previous) game.groundEquipment.push({ id: game.nextId++, equipmentId: previous, x: equipmentDrop.x + 16, y: equipmentDrop.y + 12, phase: Math.random() * 6 });
+      burst(game, equipmentDrop.x, equipmentDrop.y, item.color, 20, 110);
+      setMessage(game, `${item.slot.toUpperCase()} EQUIPPED // ${item.name.toUpperCase()} — ${item.perk}`);
+      beep(item.rarity === "rare" ? 880 : 720, .16);
+      return;
+    }
     const weaponDrop = game.groundWeapons.find((drop) => dist(drop, p) < 42);
     if (weaponDrop) {
       const previousWeapon = p.weaponId;
       p.weaponId = weaponDrop.weaponId;
+      setArmory((current) => {
+        const weapons = [...new Set([...current.weapons, weaponDrop.weaponId])];
+        localStorage.setItem("signal-depths-discovered-weapons", JSON.stringify(weapons));
+        return { ...current, weapons };
+      });
       const definition = getWeapon(weaponDrop.weaponId);
       p.ammo = definition.ammo ?? 0;
       game.groundWeapons = game.groundWeapons.filter((drop) => drop.id !== weaponDrop.id);
@@ -1949,16 +2090,17 @@ export default function Home() {
     const chest = game.chests.find((x) => !x.open && dist(x, p) < 42);
     if (chest) {
       chest.open = true;
+      chest.openFx = .8;
       burst(game, chest.x, chest.y, "#f4d35e", 14, 90);
       const lootTable: ItemKind[] = ["tonic", "bomb", "fury"];
       const firstKind = lootTable[Math.floor(Math.random() * lootTable.length)];
-      const secondKind = lootTable[Math.floor(Math.random() * lootTable.length)];
+      const equipment = selectEquipmentDrop(Math.random, game.roomKinds[roomIndexFor(chest.x, chest.y)] === "elite");
       game.groundItems.push(
         { id: game.nextId++, kind: firstKind, x: chest.x - 18, y: chest.y + 18, phase: Math.random() * 6 },
-        { id: game.nextId++, kind: secondKind, x: chest.x + 18, y: chest.y + 18, phase: Math.random() * 6 },
       );
+      game.groundEquipment.push({ id: game.nextId++, equipmentId: equipment.id, x: chest.x + 18, y: chest.y + 18, phase: Math.random() * 6 });
       game.score += 180;
-      setMessage(game, "CACHE OPEN // TWO ITEMS DROPPED — PRESS [F] TO COLLECT");
+      setMessage(game, `CACHE OPEN // ${equipment.rarity.toUpperCase()} ${equipment.slot.toUpperCase()} DROP`);
       beep(610, 0.15);
       return;
     }
@@ -1982,6 +2124,18 @@ export default function Home() {
 
   useEffect(() => {
     setHighScore(Number(localStorage.getItem("signal-depths-high-score") || 0));
+    const snapshot: ArmorySnapshot = {
+      weapons: JSON.parse(localStorage.getItem("signal-depths-discovered-weapons") || "[\"cleaver\"]"),
+      equipment: JSON.parse(localStorage.getItem("signal-depths-discovered-equipment") || "[]"),
+      enemies: JSON.parse(localStorage.getItem("signal-depths-discovered-enemies") || "[]"),
+      unlocks: JSON.parse(localStorage.getItem("signal-depths-unlocks") || "[]"),
+      runs: Number(localStorage.getItem("signal-depths-lifetime-runs") || 0),
+      kills: Number(localStorage.getItem("signal-depths-lifetime-kills") || 0),
+    };
+    setArmory(snapshot);
+    const savedStarter = localStorage.getItem("signal-depths-starter-weapon") as WeaponId | null;
+    const allowedStarters: WeaponId[] = ["cleaver", ...(snapshot.unlocks.includes("weapon_spear") ? ["spear" as WeaponId] : []), ...(snapshot.unlocks.includes("weapon_hammer") ? ["hammer" as WeaponId] : [])];
+    if (savedStarter && allowedStarters.includes(savedStarter)) setStarterWeapon(savedStarter);
   }, []);
 
   useEffect(() => {
@@ -1989,6 +2143,10 @@ export default function Home() {
       const key = event.key.toLowerCase();
       if (["arrowup", "arrowdown", "arrowleft", "arrowright", " "].includes(key)) event.preventDefault();
       if (!event.repeat) {
+        if (armoryOpen) {
+          if (key === "escape") setArmoryOpen(false);
+          return;
+        }
         if (key === "?" || key === "h") {
           if (helpOpen) closeHelp();
           else openHelp();
@@ -2001,7 +2159,12 @@ export default function Home() {
         if (helpOpen) return;
         if (key === " " || key === "j") attack();
         if (key === "shift" || key === "k") dodge();
-        if (key === "f") interact();
+        if (key === "f") {
+          const game = gameRef.current;
+          const gearNearby = game.groundEquipment.some((drop) => dist(drop, game.player) < 42);
+          if (gearNearby) interactHoldTimer.current = setTimeout(interact, 520);
+          else interact();
+        }
         if (key === "e") usePotion();
         if (key === "1") useItem("tonic");
         if (key === "2") useItem("bomb");
@@ -2015,14 +2178,22 @@ export default function Home() {
       }
       keysRef.current.add(key);
     };
-    const onUp = (event: KeyboardEvent) => keysRef.current.delete(event.key.toLowerCase());
+    const onUp = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      if (key === "f" && interactHoldTimer.current) {
+        clearTimeout(interactHoldTimer.current);
+        interactHoldTimer.current = null;
+      }
+      keysRef.current.delete(key);
+    };
     window.addEventListener("keydown", onDown, { passive: false });
     window.addEventListener("keyup", onUp);
     return () => {
       window.removeEventListener("keydown", onDown);
       window.removeEventListener("keyup", onUp);
+      if (interactHoldTimer.current) clearTimeout(interactHoldTimer.current);
     };
-  }, [attack, closeHelp, dodge, helpOpen, interact, openHelp, syncScreen, useItem, usePotion]);
+  }, [armoryOpen, attack, closeHelp, dodge, helpOpen, interact, openHelp, syncScreen, useItem, usePotion]);
 
   useEffect(() => {
     let frame = 0;
@@ -2091,6 +2262,13 @@ export default function Home() {
             <strong>{hud.weaponName}</strong>
             <small>{hud.ammo > 0 ? `${hud.ammo} ROUNDS` : "UNLIMITED"}</small>
           </div>
+          <div className="gear-rack">
+            <span>LOADOUT</span>
+            {(["armor", "boots", "charm", "mod"] as EquipmentSlot[]).map((slot) => {
+              const id = currentGame.equipped[slot];
+              return <p key={slot}><b>{slot}</b><em>{id ? EQUIPMENT[id].name : "EMPTY"}</em></p>;
+            })}
+          </div>
         </aside>
 
         <div className="stage-wrap">
@@ -2103,10 +2281,16 @@ export default function Home() {
                 <p>THE FLOOR IS LISTENING</p>
                 <h2>SURVIVE THE FEED.<br />STEAL THE SIGNAL.</h2>
                 <p className="intro-copy">Twelve unknown rooms. Three signal pylons. One audience waiting for a spectacular escape.</p>
-                <button onClick={startGame}>ENTER THE DEPTHS</button>
+                <div className="title-actions"><button onClick={startGame}>ENTER THE DEPTHS</button><button className="secondary" onClick={() => setArmoryOpen(true)}>OPEN ARMORY</button></div>
                 {highScore > 0 && <small>LOCAL RECORD // {highScore.toLocaleString()}</small>}
               </div>
             )}
+            {screen === "playing" && hud.nearbyEquipmentId && (() => {
+              const item = EQUIPMENT[hud.nearbyEquipmentId];
+              const equippedId = currentGame.equipped[item.slot];
+              const equipped = equippedId ? EQUIPMENT[equippedId] : null;
+              return <div className={`loot-compare ${item.rarity}`}><span>{item.rarity} {item.slot}</span><strong>{item.name}</strong><p>{item.perk} // {item.detail}</p><i>{equipped ? `REPLACES: ${equipped.name} — ${equipped.detail}` : `${item.slot.toUpperCase()} SLOT EMPTY`}</i><small>HOLD <kbd>F</kbd> TO SWAP</small></div>;
+            })()}
             {screen === "upgrade" && (
               <div className="game-overlay upgrade-overlay">
                 <p>OFF-AIR SHELTER // ONE CHOICE</p>
@@ -2202,9 +2386,40 @@ export default function Home() {
           onClose={closeHelp}
         />
       )}
+      {armoryOpen && <ArmoryModal snapshot={armory} starterWeapon={starterWeapon} onStarterChange={(weapon) => { setStarterWeapon(weapon); localStorage.setItem("signal-depths-starter-weapon", weapon); }} onClose={() => setArmoryOpen(false)} />}
       <footer><span>AN ORIGINAL ARCADE DESCENT</span><span>ESC // PAUSE</span><span>LOCAL SAVE ENABLED</span></footer>
     </main>
   );
+}
+
+function ArmoryModal({ snapshot, starterWeapon, onStarterChange, onClose }: { snapshot: ArmorySnapshot; starterWeapon: WeaponId; onStarterChange: (weapon: WeaponId) => void; onClose: () => void }) {
+  const starterUnlock: Partial<Record<WeaponId, string>> = { spear: "weapon_spear", hammer: "weapon_hammer" };
+  return (
+    <div className="help-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="help-dialog armory-dialog" role="dialog" aria-modal="true" aria-labelledby="armory-title">
+        <header className="help-header"><div><span>PERSISTENT COLLECTION // LOCAL SAVE</span><h2 id="armory-title">THE ARMORY</h2></div><button className="help-close" onClick={onClose} aria-label="Close Armory">×</button></header>
+        <div className="armory-summary"><p><b>{snapshot.runs}</b> RUNS</p><p><b>{snapshot.kills}</b> KILLS</p><p><b>{snapshot.weapons.length}/{Object.keys(WEAPONS).length}</b> WEAPONS</p><p><b>{snapshot.equipment.length}/{EQUIPMENT_IDS.length}</b> GEAR</p></div>
+        <div className="armory-scroll">
+          <section><span className="guide-kicker">STARTING WEAPON</span><h3>Choose what enters the next run.</h3><div className="armory-grid weapon-collection">
+            {Object.values(WEAPONS).map((weapon) => {
+              const discovered = snapshot.weapons.includes(weapon.id);
+              const unlockId = starterUnlock[weapon.id];
+              const eligible = weapon.id === "cleaver" || Boolean(unlockId && snapshot.unlocks.includes(unlockId));
+              return <article key={weapon.id} className={`collection-card ${discovered ? "" : "locked"}`}><GuideWeaponArt weapon={weapon.id} /><div><span>{discovered ? weapon.rarity : "UNKNOWN"}</span><h4>{discovered ? weapon.name : "UNDISCOVERED"}</h4><p>{discovered ? weapon.description : "Find this weapon during a run to reveal it."}</p>{eligible ? <button className={starterWeapon === weapon.id ? "selected" : ""} onClick={() => onStarterChange(weapon.id)}>{starterWeapon === weapon.id ? "SELECTED" : "START WITH THIS"}</button> : <small>{unlockId ? PERMANENT_UNLOCKS.find((entry) => entry.id === unlockId)?.description : "Discover in the dungeon"}</small>}</div></article>;
+            })}
+          </div></section>
+          <section><span className="guide-kicker">EQUIPMENT ARCHIVE</span><h3>Four slots. Twelve build-changing perks.</h3><div className="armory-grid gear-collection">{EQUIPMENT_IDS.map((id) => { const item = EQUIPMENT[id]; const found = snapshot.equipment.includes(id); return <article key={id} className={`collection-card gear ${found ? item.rarity : "locked"}`}><EquipmentArt item={id} /><div><span>{found ? `${item.rarity} // ${item.slot}` : "UNKNOWN SIGNAL"}</span><h4>{found ? item.name : "UNDISCOVERED"}</h4><p>{found ? `${item.perk}: ${item.detail}` : "Open caches and clear dangerous encounters to find it."}</p></div></article>; })}</div></section>
+          <section><span className="guide-kicker">THREAT ARCHIVE</span><h3>Enemies logged across every broadcast.</h3><div className="armory-grid enemy-collection">{ENEMY_GUIDE.map((enemy) => { const found = snapshot.enemies.includes(enemy.kind); return <article key={enemy.kind} className={`collection-card ${found ? "" : "locked"}`}><GuideEnemyArt kind={enemy.kind} /><div><span>{found ? enemy.role : "NO SIGNAL"}</span><h4>{found ? enemy.name : "UNIDENTIFIED"}</h4><p>{found ? enemy.tip : "Encounter this threat to record its field data."}</p></div></article>; })}</div></section>
+        </div>
+        <footer className="help-footer"><span>DISCOVERIES AND STARTER CHOICES SAVE ON THIS DEVICE</span><button onClick={onClose}>RETURN TO THE FEED</button></footer>
+      </section>
+    </div>
+  );
+}
+
+function EquipmentArt({ item }: { item: EquipmentId }) {
+  const definition = EQUIPMENT[item];
+  return <div className={`equipment-art ${definition.slot}`} style={{ "--gear-color": definition.color } as CSSProperties} aria-hidden="true"><i /><b /><em /></div>;
 }
 
 function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection; onSectionChange: (section: HelpSection) => void; onClose: () => void }) {
@@ -2248,7 +2463,7 @@ function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection
                 <GuideControl keys="W A S D" title="Move" copy="Travel, aim your next strike, and approach interactable objects." />
                 <GuideControl keys="SPACE / J" title="Attack" copy="Swing or fire your equipped weapon in the direction you face." />
                 <GuideControl keys="SHIFT / K" title="Dodge" copy="Spend Drive for a fast burst with a brief window of invulnerability." />
-                <GuideControl keys="F" title="Interact" copy="Activate pylons, open caches, collect drops, swap weapons, and exit." />
+                <GuideControl keys="F / HOLD F" title="Interact" copy="Tap for objects and consumables. Hold near equipment to confirm a gear swap." />
                 <GuideControl keys="1 / E" title="Vital Tonic" copy="Restore 45 health. It cannot be used while already at full health." />
                 <GuideControl keys="2" title="Roombreaker Bomb" copy="Deal 55 damage to every unshielded enemy in your current room." />
                 <GuideControl keys="3" title="Fury Vial" copy="Temporarily boosts weapon damage and can be improved by upgrades." />
@@ -2267,6 +2482,8 @@ function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection
                   </article>
                 ))}
               </div>
+              <p className="guide-intro equipment-guide-intro">Equipment occupies one of four slots: armor, boots, charm, or weapon mod. Matching perks creates builds that can change how you move, score, heal, and attack.</p>
+              <div className="arsenal-grid">{EQUIPMENT_IDS.map((id) => { const item = EQUIPMENT[id]; return <article className="guide-card weapon-guide-card" key={id}><EquipmentArt item={id} /><div><span>{item.rarity} // {item.slot}</span><h3>{item.name}</h3><p><b>{item.perk}</b> — {item.detail}</p></div></article>; })}</div>
             </div>
           )}
           {section === "enemies" && (
@@ -2284,7 +2501,7 @@ function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection
           )}
           {section === "rooms" && (
             <div className="guide-section">
-              <p className="guide-intro">Each run rearranges the room types. Combat doors glow red and seal behind you until the encounter is complete.</p>
+              <p className="guide-intro">Each run rearranges the room types. Door clues preserve the mystery while supporting informed gambles: gold means reward, red means danger, green means rest, blue means an objective, and gray remains unknown.</p>
               <div className="room-guide-grid">
                 {ROOM_GUIDE.map((room) => <article className={`room-guide-card ${room.kind}`} key={room.kind}><GuideRoomArt kind={room.kind} /><div><span>{room.kind}</span><h3>{room.name}</h3><p>{room.copy}</p></div></article>)}
               </div>

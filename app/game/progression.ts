@@ -216,8 +216,8 @@ export interface PermanentUnlockDefinition {
 }
 
 export const PERMANENT_UNLOCKS = [
-  { id: "weapon_spear", name: "Relay Spear", description: "Adds the long-range Relay Spear to future runs.", category: "weapon", condition: { stat: "enemiesDefeated", atLeast: 25 } },
-  { id: "weapon_hammer", name: "Dead-Air Hammer", description: "Adds the heavy Dead-Air Hammer to future runs.", category: "weapon", condition: { stat: "elitesDefeated", atLeast: 3 } },
+  { id: "weapon_spear", name: "Antenna Spear Starter", description: "Defeat 15 lifetime enemies to select the Antenna Spear as a starting weapon.", category: "weapon", condition: { stat: "lifetimeKills", atLeast: 15 } },
+  { id: "weapon_hammer", name: "Dead-Air Hammer Starter", description: "Defeat the Broadcast Warden to select the Dead-Air Hammer as a starting weapon.", category: "weapon", condition: { stat: "bossesDefeated", atLeast: 1 } },
   { id: "item_decoy", name: "Laugh Track Decoy", description: "Adds decoys to future loot pools.", category: "item", condition: { stat: "daresCompleted", atLeast: 3 } },
   { id: "item_freeze", name: "Pause Button", description: "Adds freeze canisters to future loot pools.", category: "item", condition: { stat: "secretsFound", atLeast: 2 } },
   { id: "palette_neon", name: "Neon Afterimage", description: "Unlocks a vivid player palette.", category: "palette", condition: { stat: "highestHype", atLeast: 100 } },
