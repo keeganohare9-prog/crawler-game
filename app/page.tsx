@@ -6,6 +6,7 @@ import { WEAPONS, getWeapon, selectWeaponDrop, type WeaponId } from "./game/comb
 import { EQUIPMENT, EQUIPMENT_IDS, selectEquipmentDrop, type EquipmentId, type EquipmentSlot } from "./game/equipment";
 import { AUDIENCE_DARES, PERMANENT_UNLOCKS, RUN_UPGRADES, bossPhaseForHealth, chooseAudienceDares, chooseSafeRoomUpgrades, newlyEarnedUnlocks, sponsorRewardsCrossed, summarizeRun, type RunStats, type RunUpgradeId } from "./game/progression";
 import { PLAYER_CLASSES, PLAYER_CLASS_IDS, type PlayerClassId } from "./game/classes";
+import { CLASS_ARSENAL, arsenalForClass, selectClassArsenalDrop, type ClassArsenalBehavior, type ClassArsenalId } from "./game/class-arsenal";
 
 const TILE = 32;
 const ROOM_COLS = 4;
@@ -36,13 +37,14 @@ type Enemy = {
   elite: boolean;
 };
 type ProjectileKind = "enemy" | "scrap" | "arc-bolt" | "arrow" | "power-arrow";
-type Projectile = { x: number; y: number; vx: number; vy: number; life: number; damage: number; owner?: "enemy" | "player"; pierce?: number; weaponId?: WeaponId; kind?: ProjectileKind; splash?: number; splashDamage?: number; traveled?: number; slow?: number };
+type Projectile = { x: number; y: number; vx: number; vy: number; life: number; damage: number; owner?: "enemy" | "player"; pierce?: number; weaponId?: WeaponId; arsenalId?: ClassArsenalId; behavior?: ClassArsenalBehavior; kind?: ProjectileKind; splash?: number; splashDamage?: number; traveled?: number; slow?: number; bounces?: number };
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; size: number };
 type Pylon = { x: number; y: number; active: boolean };
 type Chest = { x: number; y: number; open: boolean; openFx: number };
 type ItemKind = "tonic" | "bomb" | "fury";
 type GroundItem = { id: number; kind: ItemKind; x: number; y: number; phase: number };
 type GroundWeapon = { id: number; weaponId: WeaponId; x: number; y: number; phase: number };
+type GroundClassArsenal = { id: number; arsenalId: ClassArsenalId; x: number; y: number; phase: number };
 type GroundEquipment = { id: number; equipmentId: EquipmentId; x: number; y: number; phase: number };
 type Trap = { x: number; y: number; phase: number };
 type Screen = "title" | "class-select" | "playing" | "paused" | "upgrade" | "won" | "lost";
@@ -51,6 +53,7 @@ type Game = {
   screen: Screen;
   player: {
     classId: PlayerClassId;
+    classArsenalId: ClassArsenalId;
     x: number;
     y: number;
     hp: number;
@@ -83,6 +86,7 @@ type Game = {
   chests: Chest[];
   groundItems: GroundItem[];
   groundWeapons: GroundWeapon[];
+  groundClassArsenal: GroundClassArsenal[];
   groundEquipment: GroundEquipment[];
   traps: Trap[];
   explored: Set<string>;
@@ -306,6 +310,7 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     screen,
     player: {
       classId,
+      classArsenalId: classId === "archer" ? "relay-recurve" : "signal-grimoire",
       x: 2.5 * TILE,
       y: 2.5 * TILE,
       hp: playerClass.hp,
@@ -338,6 +343,7 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     chests,
     groundItems: [],
     groundWeapons: [],
+    groundClassArsenal: [],
     groundEquipment: [],
     traps,
     explored: new Set(["0"]),
@@ -687,6 +693,17 @@ function renderGame(ctx: CanvasRenderingContext2D, game: Game) {
     ctx.restore();
     ctx.shadowBlur = 0;
     drawPixelText(ctx, weapon.name.toUpperCase(), drop.x, drop.y - 20 + bob, color, "center");
+  });
+
+  game.groundClassArsenal.forEach((drop) => {
+    const item = CLASS_ARSENAL[drop.arsenalId];
+    const bob = Math.sin(game.elapsed * 4 + drop.phase) * 3;
+    ctx.save(); ctx.translate(drop.x, drop.y + bob); ctx.shadowColor = item.color; ctx.shadowBlur = 12;
+    ctx.strokeStyle = item.color; ctx.lineWidth = 3;
+    if (item.classId === "mage") { ctx.beginPath(); ctx.arc(0, 0, 10, 0, Math.PI * 2); ctx.stroke(); ctx.fillStyle = item.color; ctx.fillRect(-4, -4, 8, 8); }
+    else { ctx.rotate(-.45); ctx.beginPath(); ctx.arc(0, 0, 13, -1.2, 1.2); ctx.stroke(); ctx.fillStyle = "#d6b06a"; ctx.fillRect(8, -1, 22, 2); }
+    ctx.restore();
+    drawPixelText(ctx, item.name.toUpperCase(), drop.x, drop.y - 20 + bob, item.color, "center");
   });
 
   game.groundEquipment.forEach((drop) => {
@@ -1420,14 +1437,15 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
 
   game.projectiles.forEach((shot) => {
     if (shot.kind === "arc-bolt") {
-      ctx.fillStyle = "rgba(167,139,250,.25)"; ctx.beginPath(); ctx.arc(shot.x, shot.y, 10, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = "#a78bfa"; ctx.fillRect(shot.x - 5, shot.y - 5, 10, 10);
+      const color = shot.arsenalId ? CLASS_ARSENAL[shot.arsenalId].color : "#a78bfa";
+      ctx.globalAlpha = .28; ctx.fillStyle = color; ctx.beginPath(); ctx.arc(shot.x, shot.y, shot.behavior === "blast" || shot.behavior === "pull" ? 12 : 10, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+      ctx.fillStyle = color; ctx.fillRect(shot.x - 5, shot.y - 5, 10, 10);
       ctx.fillStyle = "#fff"; ctx.fillRect(shot.x - 2, shot.y - 2, 4, 4);
     } else if (shot.kind === "arrow" || shot.kind === "power-arrow") {
       const angle = Math.atan2(shot.vy, shot.vx);
       ctx.save(); ctx.translate(shot.x, shot.y); ctx.rotate(angle);
       ctx.fillStyle = shot.kind === "power-arrow" ? "#d8ffe9" : "#d6b06a"; ctx.fillRect(-11, -1, shot.kind === "power-arrow" ? 28 : 22, shot.kind === "power-arrow" ? 3 : 2);
-      ctx.fillStyle = "#34d399"; ctx.fillRect(10, -4, 7, 8); ctx.fillRect(-13, -4, 4, 8); ctx.restore();
+      ctx.fillStyle = shot.arsenalId ? CLASS_ARSENAL[shot.arsenalId].color : "#34d399"; ctx.fillRect(10, -4, 7, 8); ctx.fillRect(-13, -4, 4, 8); ctx.restore();
     } else {
       ctx.fillStyle = shot.owner === "player" ? "rgba(244,211,94,.3)" : "rgba(255,77,109,.28)";
       ctx.fillRect(shot.x - 8, shot.y - 8, 16, 16);
@@ -1460,9 +1478,11 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   let prompt = "";
   const nearbyItem = game.groundItems.find((item) => dist(item, p) < 38);
   const nearbyWeapon = game.groundWeapons.find((drop) => dist(drop, p) < 42);
+  const nearbyClassArsenal = game.groundClassArsenal.find((drop) => dist(drop, p) < 42);
   const nearbyEquipment = game.groundEquipment.find((drop) => dist(drop, p) < 42);
   if (nearbyEquipment) prompt = `[HOLD F] EQUIP ${EQUIPMENT[nearbyEquipment.equipmentId].name.toUpperCase()}`;
   else if (nearbyWeapon) prompt = `[F] EQUIP ${getWeapon(nearbyWeapon.weaponId).name.toUpperCase()}`;
+  else if (nearbyClassArsenal) prompt = `[F] EQUIP ${CLASS_ARSENAL[nearbyClassArsenal.arsenalId].name.toUpperCase()}`;
   else if (nearbyItem) prompt = `[F] PICK UP ${nearbyItem.kind.toUpperCase()}`;
   else if (game.pylons.some((x) => !x.active && dist(x, p) < 42)) prompt = "[F] JACK IN";
   else if (game.chests.some((x) => !x.open && dist(x, p) < 42)) prompt = "[F] CRACK CACHE";
@@ -1549,9 +1569,15 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
       game.player.maxHp += reward.maxHealth;
       game.player.hp += reward.maxHealth;
     }
-    if (threshold.id === "sponsor_cache" && game.player.classId === "knight") {
-      const rareWeapon = selectWeaponDrop(Math.random, { exclude: [game.player.weaponId], allowedRarities: ["rare"] });
-      if (rareWeapon) game.groundWeapons.push({ id: game.nextId++, weaponId: rareWeapon.id, x: game.player.x + 24, y: game.player.y + 18, phase: 0 });
+    if (threshold.id === "sponsor_cache") {
+      if (game.player.classId === "knight") {
+        const rareWeapon = selectWeaponDrop(Math.random, { exclude: [game.player.weaponId], allowedRarities: ["rare"] });
+        if (rareWeapon) game.groundWeapons.push({ id: game.nextId++, weaponId: rareWeapon.id, x: game.player.x + 24, y: game.player.y + 18, phase: 0 });
+      } else {
+        const classDrop = arsenalForClass(game.player.classId).filter((entry) => entry.rarity === "rare" && entry.id !== game.player.classArsenalId);
+        const item = classDrop[Math.floor(Math.random() * classDrop.length)] ?? selectClassArsenalDrop(game.player.classId, game.player.classArsenalId);
+        if (item) game.groundClassArsenal.push({ id: game.nextId++, arsenalId: item.id, x: game.player.x + 24, y: game.player.y + 18, phase: 0 });
+      }
     }
     setMessage(game, `SPONSOR DROP // ${threshold.name.toUpperCase()}`);
   });
@@ -1765,23 +1791,40 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     shot.x += shot.vx * dt;
     shot.y += shot.vy * dt;
     shot.traveled = (shot.traveled ?? 0) + Math.hypot(shot.vx, shot.vy) * dt;
-    if (shot.life <= 0 || !canMove(shot.x, shot.y, 3)) return false;
+    if (shot.life <= 0) return false;
+    if (!canMove(shot.x, shot.y, 3)) {
+      if (shot.behavior === "bounce" && (shot.bounces ?? 0) > 0) {
+        shot.x -= shot.vx * dt * 1.4; shot.y -= shot.vy * dt * 1.4;
+        shot.vx *= -1; shot.vy *= -1; shot.bounces = (shot.bounces ?? 1) - 1;
+        burst(game, shot.x, shot.y, "#76c7dc", 5, 55);
+      } else return false;
+    }
     if (shot.owner === "player") {
       const target = game.enemies.find((enemy) => dist(shot, enemy) < 15);
       if (target) {
         let damage = shot.damage;
-        if ((shot.kind === "arrow" || shot.kind === "power-arrow") && (shot.traveled ?? 0) > 140) damage *= 1.25;
-        if (shot.kind === "arrow" && (shot.traveled ?? 0) < 55) damage *= .85;
+        if ((shot.behavior === "precision" || shot.kind === "power-arrow") && (shot.traveled ?? 0) > 140) damage *= 1.25;
+        if (shot.behavior === "longshot" && (shot.traveled ?? 0) > 150) damage *= 1.55;
+        if (shot.behavior === "longshot" && (shot.traveled ?? 0) < 70) damage *= .7;
+        if ((shot.behavior === "precision" || shot.behavior === "longshot") && (shot.traveled ?? 0) < 55) damage *= .85;
         target.hp -= damage;
         if (game.player.classId === "knight") game.weaponHits[shot.weaponId ?? game.player.weaponId]++;
         target.flash = .14;
-        const color = shot.kind === "arc-bolt" ? "#a78bfa" : shot.kind === "arrow" || shot.kind === "power-arrow" ? "#34d399" : "#f4d35e";
+        const color = shot.arsenalId ? CLASS_ARSENAL[shot.arsenalId].color : shot.kind === "arc-bolt" ? "#a78bfa" : shot.kind === "arrow" || shot.kind === "power-arrow" ? "#34d399" : "#f4d35e";
         burst(game, target.x, target.y, color, shot.kind === "power-arrow" ? 14 : 8, shot.kind === "power-arrow" ? 145 : 100);
+        if (shot.behavior === "frost") target.recovery = Math.max(target.recovery, target.kind === "boss" ? .18 : .52);
+        if (shot.behavior === "chain") {
+          game.enemies.filter((enemy) => enemy.id !== target.id && dist(enemy, target) < 72).slice(0, 2).forEach((enemy) => { enemy.hp -= shot.damage * .62; enemy.flash = .14; burst(game, enemy.x, enemy.y, "#d9f7ff", 7, 80); });
+        }
         if (shot.splash && shot.splashDamage) {
           game.enemies.filter((enemy) => enemy.id !== target.id && dist(enemy, target) < shot.splash!).forEach((enemy) => {
             enemy.hp -= shot.splashDamage!;
             enemy.flash = .14;
-            burst(game, enemy.x, enemy.y, "#a78bfa", 6, 70);
+            if (shot.behavior === "pull" && enemy.kind !== "boss") {
+              const dx = target.x - enemy.x; const dy = target.y - enemy.y; const length = Math.max(1, Math.hypot(dx, dy));
+              enemy.x += (dx / length) * 20; enemy.y += (dy / length) * 20;
+            }
+            burst(game, enemy.x, enemy.y, color, 6, 70);
           });
         }
         if (shot.kind === "power-arrow") shot.damage *= .85;
@@ -1824,11 +1867,16 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     game.score += encounterKind === "boss" ? 1800 : encounterKind === "elite" ? 650 : 320;
     game.hype += encounterKind === "elite" ? 12 : 7;
     game.maxHype = Math.max(game.maxHype, game.hype);
-    if (p.classId === "knight" && ["elite", "broadcast", "treasure"].includes(encounterKind)) {
-      const weapon = selectWeaponDrop(Math.random, { exclude: [p.weaponId] });
-      if (weapon) {
-        const room = roomFor(p.x, p.y);
+    if (["elite", "broadcast", "treasure"].includes(encounterKind)) {
+      const room = roomFor(p.x, p.y);
+      if (p.classId === "knight") {
+        const weapon = selectWeaponDrop(Math.random, { exclude: [p.weaponId] });
+        if (weapon) {
         game.groundWeapons.push({ id: game.nextId++, weaponId: weapon.id, x: (room.col * 8 + 4.5) * TILE, y: (room.row * 8 + 4.5) * TILE, phase: Math.random() * 6 });
+        }
+      } else {
+        const drop = selectClassArsenalDrop(p.classId, p.classArsenalId);
+        if (drop) game.groundClassArsenal.push({ id: game.nextId++, arsenalId: drop.id, x: (room.col * 8 + 4.5) * TILE, y: (room.row * 8 + 4.5) * TILE, phase: Math.random() * 6 });
       }
     }
     if (!game.dareComplete && game.activeDareId !== "close_quarters" && game.activeDareId !== "bomb_double") game.dareProgress++;
@@ -1873,7 +1921,7 @@ function makeHud(game: Game): Hud {
     bombs: game.player.bombs,
     furyVials: game.player.furyVials,
     furyTime: game.player.furyTime,
-    weaponName: game.player.classId === "mage" ? "Signal Grimoire" : game.player.classId === "archer" ? "Relay Recurve" : getWeapon(game.player.weaponId).name,
+    weaponName: game.player.classId === "knight" ? getWeapon(game.player.weaponId).name : CLASS_ARSENAL[game.player.classArsenalId].name,
     ammo: game.player.classId === "archer" ? game.player.classResource : game.player.ammo,
     nearbyEquipmentId: game.groundEquipment.find((drop) => dist(drop, game.player) < 42)?.equipmentId ?? null,
     equipmentNames: (Object.values(game.equipped).filter(Boolean) as EquipmentId[]).map((id) => EQUIPMENT[id].name),
@@ -1903,9 +1951,9 @@ function runStatsFor(game: Game): RunStats {
     highestHype: Math.round(game.maxHype),
     daresCompleted: game.dareComplete ? 1 : 0,
     secretsFound: 0,
-    lootValue: game.upgrades.length * 250 + game.discoveredEquipment.length * 180 + game.groundWeapons.length * 120,
+    lootValue: game.upgrades.length * 250 + game.discoveredEquipment.length * 180 + (game.groundWeapons.length + game.groundClassArsenal.length) * 120,
     remainingSeconds: Math.round(game.time),
-    favoriteWeapon: game.player.classId === "knight" ? getWeapon(game.player.weaponId).name : PLAYER_CLASSES[game.player.classId].basicName,
+    favoriteWeapon: game.player.classId === "knight" ? getWeapon(game.player.weaponId).name : CLASS_ARSENAL[game.player.classArsenalId].name,
   };
 }
 
@@ -2048,37 +2096,40 @@ export default function Home() {
     const p = game.player;
     if (p.attackCd > 0) return;
     if (p.classId === "mage") {
-      p.attackCd = .35;
+      const focus = CLASS_ARSENAL[p.classArsenalId];
+      p.attackCd = focus.cooldown;
       p.attackFx = .24;
-      game.projectiles.push({
-        x: p.x + p.dirX * 18, y: p.y + p.dirY * 18,
-        vx: p.dirX * 270, vy: p.dirY * 270, life: .84,
-        damage: 14 * (p.furyTime > 0 ? 1.75 : 1), owner: "player", pierce: 0,
-        kind: "arc-bolt", splash: 26, splashDamage: 8 * (p.furyTime > 0 ? 1.75 : 1), traveled: 0,
-      });
-      burst(game, p.x + p.dirX * 20, p.y + p.dirY * 20, "#a78bfa", 8, 60);
-      beep(430, .09);
+      const baseAngle = Math.atan2(p.dirY, p.dirX);
+      for (let index = 0; index < focus.shots; index++) {
+        const offset = (index - (focus.shots - 1) / 2) * focus.spread;
+        const angle = baseAngle + offset;
+        game.projectiles.push({ x:p.x + Math.cos(angle) * 18, y:p.y + Math.sin(angle) * 18, vx:Math.cos(angle) * focus.speed, vy:Math.sin(angle) * focus.speed, life:focus.lifetime, damage:focus.damage * (p.furyTime > 0 ? 1.75 : 1), owner:"player", pierce:focus.pierce, kind:"arc-bolt", splash:focus.splash, splashDamage:focus.splashDamage * (p.furyTime > 0 ? 1.75 : 1), traveled:0, arsenalId:focus.id, behavior:focus.behavior, bounces:focus.behavior === "bounce" ? 2 : 0 });
+      }
+      burst(game, p.x + p.dirX * 20, p.y + p.dirY * 20, focus.color, 8, 60);
+      beep(focus.behavior === "frost" ? 520 : focus.behavior === "blast" ? 220 : 430, .09);
       return;
     }
     if (p.classId === "archer") {
+      const bow = CLASS_ARSENAL[p.classArsenalId];
       if (p.reloadTime > 0) { setMessage(game, "RESTRINGING QUIVER // HOLD THE LINE"); return; }
-      if (p.classResource <= 0) {
+      if (p.classResource < bow.ammoCost) {
         p.reloadTime = .95;
         setMessage(game, "QUIVER EMPTY // RELOADING");
         beep(80, .05);
         return;
       }
-      p.classResource--;
+      p.classResource -= bow.ammoCost;
       if (p.classResource <= 0) p.reloadTime = .95;
-      p.attackCd = .4;
+      p.attackCd = bow.cooldown;
       p.attackFx = .2;
-      game.projectiles.push({
-        x: p.x + p.dirX * 20, y: p.y + p.dirY * 20,
-        vx: p.dirX * 560, vy: p.dirY * 560, life: .58,
-        damage: 19 * (p.furyTime > 0 ? 1.75 : 1), owner: "player", pierce: 0, kind: "arrow", traveled: 0,
-      });
-      burst(game, p.x - p.dirX * 8, p.y - p.dirY * 8, "#34d399", 4, 45);
-      beep(610, .045);
+      const baseAngle = Math.atan2(p.dirY, p.dirX);
+      for (let index = 0; index < bow.shots; index++) {
+        const offset = (index - (bow.shots - 1) / 2) * bow.spread;
+        const angle = baseAngle + offset;
+        game.projectiles.push({ x:p.x + Math.cos(angle) * 20, y:p.y + Math.sin(angle) * 20, vx:Math.cos(angle) * bow.speed, vy:Math.sin(angle) * bow.speed, life:bow.lifetime, damage:bow.damage * (p.furyTime > 0 ? 1.75 : 1), owner:"player", pierce:bow.pierce, kind:"arrow", traveled:0, arsenalId:bow.id, behavior:bow.behavior, bounces:bow.behavior === "bounce" ? 2 : 0 });
+      }
+      burst(game, p.x - p.dirX * 8, p.y - p.dirY * 8, bow.color, bow.shots > 1 ? 8 : 4, 45);
+      beep(bow.behavior === "rapid" ? 720 : bow.behavior === "longshot" ? 420 : 610, .045);
       return;
     }
     const weapon = getWeapon(p.weaponId);
@@ -2333,6 +2384,19 @@ export default function Home() {
       beep(item.rarity === "rare" ? 880 : 720, .16);
       return;
     }
+    const classDrop = game.groundClassArsenal.find((drop) => dist(drop, p) < 42);
+    if (classDrop) {
+      const nextItem = CLASS_ARSENAL[classDrop.arsenalId];
+      if (nextItem.classId !== p.classId) return;
+      const previous = p.classArsenalId;
+      p.classArsenalId = nextItem.id;
+      game.groundClassArsenal = game.groundClassArsenal.filter((drop) => drop.id !== classDrop.id);
+      if (previous !== nextItem.id) game.groundClassArsenal.push({ id: game.nextId++, arsenalId: previous, x: classDrop.x + 16, y: classDrop.y + 12, phase: Math.random() * 6 });
+      burst(game, classDrop.x, classDrop.y, nextItem.color, 18, 115);
+      setMessage(game, `EQUIPPED // ${nextItem.name.toUpperCase()} — ${nextItem.mechanic}`);
+      beep(nextItem.rarity === "rare" ? 880 : 740, .15);
+      return;
+    }
     const weaponDrop = game.groundWeapons.find((drop) => dist(drop, p) < 42);
     if (weaponDrop) {
       const previousWeapon = p.weaponId;
@@ -2560,7 +2624,7 @@ export default function Home() {
           <div className="weapon-card">
             <span>{hud.classId === "knight" ? "ACTIVE WEAPON" : "CLASS FOCUS"}</span>
             <strong>{hud.weaponName}</strong>
-            <small>{hud.classId === "archer" ? `${hud.ammo} ARROWS${currentGame.player.reloadTime > 0 ? " // RELOADING" : ""}` : hud.classId === "mage" ? "ARCANE FOCUS // UNLIMITED BOLTS" : hud.ammo > 0 ? `${hud.ammo} ROUNDS` : "UNLIMITED"}</small>
+            <small>{hud.classId === "archer" ? `${hud.ammo} ARROWS // ${CLASS_ARSENAL[currentGame.player.classArsenalId].mechanic.toUpperCase()}${currentGame.player.reloadTime > 0 ? " // RELOADING" : ""}` : hud.classId === "mage" ? CLASS_ARSENAL[currentGame.player.classArsenalId].mechanic.toUpperCase() : hud.ammo > 0 ? `${hud.ammo} ROUNDS` : "UNLIMITED"}</small>
           </div>
           <div className="gear-rack">
             <span>LOADOUT</span>
@@ -2644,7 +2708,7 @@ export default function Home() {
                 </div>
                 <div className="result-breakdown">
                   <div><span>DAMAGE REPORT</span>{damageBreakdown.length ? damageBreakdown.map(([source, amount]) => <p key={source}><b>{source}</b><em>{Math.round(amount)}</em></p>) : <p><b>Untouched</b><em>0</em></p>}</div>
-                  <div><span>COMBAT READOUT</span><p><b>{currentGame.player.classId === "knight" ? (mostUsedWeapon?.[1] ? getWeapon(mostUsedWeapon[0]).name : "No weapon used") : `${PLAYER_CLASSES[currentGame.player.classId].name} // ${PLAYER_CLASSES[currentGame.player.classId].basicName}`}</b><em>{currentGame.player.classId === "knight" ? `${mostUsedWeapon?.[1] ?? 0} ATK` : PLAYER_CLASSES[currentGame.player.classId].role.split(" // ")[0]}</em></p>{currentGame.player.classId === "knight" && <p><b>Hits per attack</b><em>{hitsPerAttack}</em></p>}{screen === "lost" && <p><b>Signal lost in</b><em>{currentGame.deathRoomKind?.toUpperCase() ?? (currentGame.time <= 0 ? "TIMEOUT" : "UNKNOWN")}</em></p>}</div>
+                  <div><span>COMBAT READOUT</span><p><b>{currentGame.player.classId === "knight" ? (mostUsedWeapon?.[1] ? getWeapon(mostUsedWeapon[0]).name : "No weapon used") : CLASS_ARSENAL[currentGame.player.classArsenalId].name}</b><em>{currentGame.player.classId === "knight" ? `${mostUsedWeapon?.[1] ?? 0} ATK` : PLAYER_CLASSES[currentGame.player.classId].role.split(" // ")[0]}</em></p>{currentGame.player.classId === "knight" && <p><b>Hits per attack</b><em>{hitsPerAttack}</em></p>}{screen === "lost" && <p><b>Signal lost in</b><em>{currentGame.deathRoomKind?.toUpperCase() ?? (currentGame.time <= 0 ? "TIMEOUT" : "UNKNOWN")}</em></p>}</div>
                 </div>
                 {currentGame.newUnlocks.length > 0 && <p className="unlock-line">UNLOCKED // {currentGame.newUnlocks.join(" + ")}</p>}
                 <button onClick={openClassSelection}>CHOOSE NEXT CRAWLER</button>
@@ -2748,6 +2812,7 @@ function ClassArt({ classId }: { classId: PlayerClassId }) {
 
 function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection; onSectionChange: (section: HelpSection) => void; onClose: () => void }) {
   const [guideClass, setGuideClass] = useState<PlayerClassId>("knight");
+  const [arsenalClass, setArsenalClass] = useState<PlayerClassId>("knight");
   const sections: Array<{ id: HelpSection; label: string }> = [
     { id: "mission", label: "Mission" },
     { id: "classes", label: "Classes" },
@@ -2814,14 +2879,18 @@ function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection
           )}
           {section === "arsenal" && (
             <div className="guide-section">
-              <p className="guide-intro">Weapon drops appear after valuable encounters. Stand near one and press <kbd>F</kbd> to equip it; your old weapon drops to the floor.</p>
+              <p className="guide-intro">Class-compatible arsenal drops appear after valuable encounters. Stand near one and press <kbd>F</kbd> to equip it; your previous weapon or focus drops to the floor.</p>
+              <nav className="arsenal-filter" aria-label="Filter arsenal by class">
+                {PLAYER_CLASS_IDS.map((classId) => <button key={classId} className={arsenalClass === classId ? "active" : ""} onClick={() => setArsenalClass(classId)} style={{ "--class-color": PLAYER_CLASSES[classId].color } as CSSProperties}><ClassArt classId={classId} /><span>{PLAYER_CLASSES[classId].role}</span><b>{PLAYER_CLASSES[classId].name}</b><small>{classId === "knight" ? `${Object.keys(WEAPONS).length} WEAPONS` : `${arsenalForClass(classId).length} ${classId === "mage" ? "SPELLS" : "WEAPONS"}`}</small></button>)}
+              </nav>
               <div className="arsenal-grid">
-                {Object.values(WEAPONS).map((weapon) => (
+                {arsenalClass === "knight" && Object.values(WEAPONS).map((weapon) => (
                   <article className="guide-card weapon-guide-card" key={weapon.id}>
                     <GuideWeaponArt weapon={weapon.id} />
                     <div><span>{weapon.rarity} // {weapon.damageType}</span><h3>{weapon.name}</h3><p>{weapon.description}</p><strong className="weapon-tactic">{WEAPON_TACTICS[weapon.id]}</strong><small>{weapon.damage} DMG · {weapon.range} RANGE · {weapon.cooldownMs}ms RECOVERY{weapon.ammo ? ` · ${weapon.ammo} AMMO` : ""}</small></div>
                   </article>
                 ))}
+                {arsenalClass !== "knight" && arsenalForClass(arsenalClass).map((item) => <article className="guide-card weapon-guide-card class-arsenal-card" key={item.id} style={{ "--arsenal-color": item.color } as CSSProperties}><GuideClassArsenalArt item={item.id} /><div><span>{item.rarity} // {item.damageType}</span><h3>{item.name}</h3><p>{item.description}</p><strong className="weapon-tactic">{item.mechanic}</strong><small>{item.damage} DMG · {Math.round(item.cooldown * 1000)}ms RECOVERY · {item.speed} SPEED{item.ammoCost ? ` · ${item.ammoCost} ARROW${item.ammoCost === 1 ? "" : "S"}` : ""}</small></div></article>)}
               </div>
               <p className="guide-intro equipment-guide-intro">Equipment occupies one of four slots: armor, boots, charm, or weapon mod. Matching perks creates builds that can change how you move, score, heal, and attack.</p>
               <div className="arsenal-grid">{EQUIPMENT_IDS.map((id) => { const item = EQUIPMENT[id]; return <article className="guide-card weapon-guide-card" key={id}><EquipmentArt item={id} /><div><span>{item.rarity} // {item.slot}</span><h3>{item.name}</h3><p><b>{item.perk}</b> — {item.detail}</p></div></article>; })}</div>
@@ -2861,6 +2930,11 @@ function GuideControl({ keys, title, copy }: { keys: string; title: string; copy
 
 function GuideWeaponArt({ weapon }: { weapon: WeaponId }) {
   return <div className={`guide-art weapon-art ${weapon}`} aria-hidden="true"><i /><b /><em /><span /></div>;
+}
+
+function GuideClassArsenalArt({ item }: { item: ClassArsenalId }) {
+  const entry = CLASS_ARSENAL[item];
+  return <div className={`guide-art class-arsenal-art ${entry.classId} ${entry.behavior}`} style={{ "--arsenal-color": entry.color } as CSSProperties} aria-hidden="true"><i /><b /><em /><span /></div>;
 }
 
 function GuideEnemyArt({ kind }: { kind: EnemyKind }) {

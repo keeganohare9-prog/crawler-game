@@ -25,9 +25,10 @@ test("server-renders the Signal Depths game shell", async () => {
 });
 
 test("includes the complete three-class combat specification", async () => {
-  const [page, classes] = await Promise.all([
+  const [page, classes, arsenal] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/game/classes.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/game/class-arsenal.ts", import.meta.url), "utf8"),
   ]);
   assert.match(classes, /knight:/);
   assert.match(classes, /mage:/);
@@ -39,4 +40,7 @@ test("includes the complete three-class combat specification", async () => {
   assert.match(page, /shiftUsedForHeavy/);
   assert.match(page, /action === "heavy"/);
   assert.match(page, /section === "classes"/);
+  assert.match(page, /arsenalClass/);
+  assert.match(page, /groundClassArsenal/);
+  for (const id of ["signal-grimoire", "cinder-codex", "frost-prism", "storm-orb", "void-lantern", "relay-recurve", "deadeye-longbow", "splitwire-bow", "bankshot-bow", "gearshot-repeater"]) assert.match(arsenal, new RegExp(id));
 });
