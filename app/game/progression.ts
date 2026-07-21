@@ -89,7 +89,7 @@ export interface AudienceDareDefinition {
 export const AUDIENCE_DARES = [
   { id: "untouched", name: "Untouched", briefing: "Clear the next combat room without taking damage.", trackingKey: "roomsClearedUntouched", target: 1, hypeReward: 18, scoreReward: 650, failureRule: "Take damage before the room clears." },
   { id: "no_tonic", name: "Dry Run", briefing: "Clear the next two rooms without using a tonic.", trackingKey: "roomsClearedWithoutTonic", target: 2, hypeReward: 14, scoreReward: 500, failureRule: "Use a healing tonic." },
-  { id: "trap_artist", name: "Trap Artist", briefing: "Defeat 3 enemies with dungeon hazards.", trackingKey: "hazardKills", target: 3, hypeReward: 20, scoreReward: 800 },
+  { id: "trap_artist", name: "Cache Cracker", briefing: "Open and resolve a Gambler's Cache loot room.", trackingKey: "lootRoomsCleared", target: 1, hypeReward: 20, scoreReward: 800 },
   { id: "speed_feed", name: "Speed Feed", briefing: "Clear a combat room in under 25 seconds.", trackingKey: "fastRoomClears", target: 1, hypeReward: 16, scoreReward: 600 },
   { id: "close_quarters", name: "Personal Space Denied", briefing: "Defeat 5 enemies with melee attacks.", trackingKey: "meleeKills", target: 5, hypeReward: 12, scoreReward: 450 },
   { id: "bomb_double", name: "Two-for-One", briefing: "Defeat 2 enemies with a single bomb.", trackingKey: "multiBombKills", target: 1, hypeReward: 22, scoreReward: 900 },

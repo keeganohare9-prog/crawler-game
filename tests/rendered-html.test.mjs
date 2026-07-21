@@ -44,3 +44,17 @@ test("includes the complete three-class combat specification", async () => {
   assert.match(page, /groundClassArsenal/);
   for (const id of ["signal-grimoire", "cinder-codex", "frost-prism", "storm-orb", "void-lantern", "relay-recurve", "deadeye-longbow", "splitwire-bow", "bankshot-bow", "gearshot-repeater"]) assert.match(arsenal, new RegExp(id));
 });
+
+test("uses wide unlocked doorways and Gambler's Cache rooms", async () => {
+  const [page, floor] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/game/floor.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /\[3, 4, 5\]\.includes/);
+  assert.match(page, /return kind === "boss"/);
+  assert.match(page, /function chaseWaypoint/);
+  assert.match(page, /Math\.random\(\) < \.5/);
+  assert.match(page, /releaseLootAmbush/);
+  assert.match(floor, /"loot"/);
+  assert.doesNotMatch(floor, /"trap"/);
+});

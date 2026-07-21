@@ -12,7 +12,7 @@ export type RoomId = `room-${number}`;
 
 export type RoomKind =
   | "ambush"
-  | "trap"
+  | "loot"
   | "treasure"
   | "survival"
   | "elite"
@@ -170,7 +170,7 @@ export interface DoorLockState {
 
 const ROOM_KIND_HINTS: Record<RoomKind, FogMetadata["hint"]> = {
   ambush: "danger",
-  trap: "danger",
+  loot: "reward",
   treasure: "reward",
   survival: "danger",
   elite: "danger",
@@ -191,7 +191,7 @@ const PHYSICAL_SLOTS: readonly PhysicalRoomSlot[] = [
 
 const STANDARD_KINDS: readonly RoomKind[] = [
   "ambush",
-  "trap",
+  "loot",
   "treasure",
   "survival",
   "elite",
@@ -318,8 +318,8 @@ function makeEncounter(kind: RoomKind, order: number): EncounterDefinition {
   switch (kind) {
     case "ambush":
       return { ...base, title: "Dead-Air Ambush", description: "The doors seal as movement floods the room.", locksDoorsOnStart: true, completion: { type: "clear-enemies" }, rewardTier: "common" };
-    case "trap":
-      return { ...base, title: "Signal Gauntlet", description: "Cross the hazard pattern and hit the release switch.", locksDoorsOnStart: true, completion: { type: "activate-switches", count: 1 }, rewardTier: "common" };
+    case "loot":
+      return { ...base, title: "Gambler's Cache", description: "Open the cache: half pay out, half release a waiting ambush.", locksDoorsOnStart: false, completion: { type: "collect-reward", count: 1 }, rewardTier: "uncommon" };
     case "treasure":
       return { ...base, title: "Sponsor Cache", description: "Choose and collect a reward from the broadcast cache.", locksDoorsOnStart: false, completion: { type: "collect-reward", count: 1 }, rewardTier: "uncommon" };
     case "survival":
@@ -340,7 +340,7 @@ function makeEncounter(kind: RoomKind, order: number): EncounterDefinition {
 function createKinds(count: number, random: () => number): RoomKind[] {
   // Entry is safe, final room is boss. Mandatory middle rooms guarantee variety.
   const middleCount = count - 2;
-  const mandatory: RoomKind[] = ["ambush", "trap", "treasure", "survival", "elite", "puzzle", "broadcast"];
+  const mandatory: RoomKind[] = ["ambush", "loot", "treasure", "survival", "elite", "puzzle", "broadcast"];
   const kinds = mandatory.slice(0, middleCount);
   while (kinds.length < middleCount) kinds.push(pick(STANDARD_KINDS, random));
 

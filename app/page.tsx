@@ -35,6 +35,7 @@ type Enemy = {
   windup: number;
   recovery: number;
   elite: boolean;
+  homeRoomIndex: number;
 };
 type ProjectileKind = "enemy" | "scrap" | "arc-bolt" | "arrow" | "power-arrow";
 type Projectile = { x: number; y: number; vx: number; vy: number; life: number; damage: number; owner?: "enemy" | "player"; pierce?: number; weaponId?: WeaponId; arsenalId?: ClassArsenalId; behavior?: ClassArsenalBehavior; kind?: ProjectileKind; splash?: number; splashDamage?: number; traveled?: number; slow?: number; bounces?: number };
@@ -46,7 +47,6 @@ type GroundItem = { id: number; kind: ItemKind; x: number; y: number; phase: num
 type GroundWeapon = { id: number; weaponId: WeaponId; x: number; y: number; phase: number };
 type GroundClassArsenal = { id: number; arsenalId: ClassArsenalId; x: number; y: number; phase: number };
 type GroundEquipment = { id: number; equipmentId: EquipmentId; x: number; y: number; phase: number };
-type Trap = { x: number; y: number; phase: number };
 type Screen = "title" | "class-select" | "playing" | "paused" | "upgrade" | "won" | "lost";
 type HelpSection = "mission" | "classes" | "controls" | "arsenal" | "enemies" | "rooms";
 type Game = {
@@ -88,7 +88,6 @@ type Game = {
   groundWeapons: GroundWeapon[];
   groundClassArsenal: GroundClassArsenal[];
   groundEquipment: GroundEquipment[];
-  traps: Trap[];
   explored: Set<string>;
   time: number;
   score: number;
@@ -202,7 +201,7 @@ const initialHud: Hud = {
   objective: "Activate 3 signal pylons",
 };
 
-const enemyStats: Record<EnemyKind, Omit<Enemy, "id" | "kind" | "x" | "y" | "cooldown" | "flash" | "windup" | "recovery" | "elite">> = {
+const enemyStats: Record<EnemyKind, Omit<Enemy, "id" | "kind" | "x" | "y" | "cooldown" | "flash" | "windup" | "recovery" | "elite" | "homeRoomIndex">> = {
   skitter: { hp: 28, maxHp: 28, speed: 68, damage: 9 },
   warden: { hp: 65, maxHp: 65, speed: 39, damage: 16 },
   spitter: { hp: 34, maxHp: 34, speed: 48, damage: 8 },
@@ -235,7 +234,7 @@ const ROOM_GUIDE: Array<{ kind: RoomKind; name: string; copy: string }> = [
   { kind: "safe", name: "Safe", copy: "Restore health and install one run upgrade." },
   { kind: "ambush", name: "Ambush", copy: "Doors lock until every attacker is defeated." },
   { kind: "survival", name: "Survival", copy: "Outlast the broadcast timer and clear the remaining enemies." },
-  { kind: "trap", name: "Trap", copy: "Read the floor rhythm and survive the hazard cycle." },
+  { kind: "loot", name: "Loot Gamble", copy: "Open the cache for a 50% reward chance—or release the enemies hiding inside." },
   { kind: "treasure", name: "Treasure", copy: "Open the cache—but be ready for a mimic." },
   { kind: "elite", name: "Elite", copy: "A dangerous squad guarding stronger loot." },
   { kind: "puzzle", name: "Puzzle", copy: "Activate its signal objective or clear its defender." },
@@ -245,7 +244,7 @@ const ROOM_GUIDE: Array<{ kind: RoomKind; name: string; copy: string }> = [
 
 function routeHint(kind: RoomKind) {
   if (kind === "safe") return { icon: "+", label: "REST", color: "#34d399" };
-  if (["treasure", "broadcast"].includes(kind)) return { icon: "$", label: "REWARD", color: "#f4d35e" };
+  if (["treasure", "loot", "broadcast"].includes(kind)) return { icon: "$", label: "REWARD", color: "#f4d35e" };
   if (["elite", "boss", "survival"].includes(kind)) return { icon: "!", label: "DANGER", color: "#ff4d6d" };
   if (kind === "puzzle") return { icon: "◆", label: "SIGNAL", color: "#76c7dc" };
   return { icon: "?", label: "UNKNOWN", color: "#9aaba4" };
@@ -263,7 +262,7 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     const hp = Math.round(stats.hp * progression * (elite ? 1.08 : 1));
     return {
       id: nextId++, kind, x: tx * TILE + TILE / 2, y: ty * TILE + TILE / 2,
-      cooldown: Math.random() * 1.2, flash: 0, windup: 0, recovery: 0, elite,
+      cooldown: Math.random() * 1.2, flash: 0, windup: 0, recovery: 0, elite, homeRoomIndex: roomIndex,
       ...stats,
       hp, maxHp: hp,
       damage: Math.max(4, Math.round(stats.damage * progression)),
@@ -273,7 +272,6 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
 
   const enemies: Enemy[] = [];
   const chests: Chest[] = [];
-  const traps: Trap[] = [];
   roomKinds.forEach((kind, index) => {
     const col = index % ROOM_COLS;
     const row = Math.floor(index / ROOM_COLS);
@@ -289,14 +287,7 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     if (kind === "puzzle") enemies.push(enemy("spitter", tx + 5, ty + 3, index));
     if (kind === "treasure") enemies.push(enemy("mimic", tx + 5, ty + 5, index));
     if (kind === "boss") enemies.push(enemy("boss", tx + 4, ty + 4, index, true));
-    if (["treasure", "elite", "broadcast"].includes(kind)) chests.push({ x: (tx + 2.5) * TILE, y: (ty + 5.5) * TILE, open: false, openFx: 0 });
-    if (kind === "trap") {
-      traps.push(
-        { x: (tx + 3.5) * TILE, y: (ty + 3.5) * TILE, phase: 0 },
-        { x: (tx + 4.5) * TILE, y: (ty + 3.5) * TILE, phase: .35 },
-        { x: (tx + 5.5) * TILE, y: (ty + 4.5) * TILE, phase: .7 },
-      );
-    }
+    if (["treasure", "elite", "broadcast", "loot"].includes(kind)) chests.push({ x: (tx + 2.5) * TILE, y: (ty + 5.5) * TILE, open: false, openFx: 0 });
   });
   const pylonRoomIndices = [2, 5, 8];
   const pylons = pylonRoomIndices.map((index) => {
@@ -345,7 +336,6 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     groundWeapons: [],
     groundClassArsenal: [],
     groundEquipment: [],
-    traps,
     explored: new Set(["0"]),
     time: 720,
     score: 0,
@@ -389,8 +379,10 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
 
 function isWallTile(tx: number, ty: number) {
   if (tx <= 0 || ty <= 0 || tx >= MAP_W - 1 || ty >= MAP_H - 1) return true;
-  if (tx % 8 === 0 && ty % 8 !== 4) return true;
-  if (ty % 8 === 0 && tx % 8 !== 4) return true;
+  const verticalDoorway = [3, 4, 5].includes(((ty % 8) + 8) % 8);
+  const horizontalDoorway = [3, 4, 5].includes(((tx % 8) + 8) % 8);
+  if (tx % 8 === 0 && !verticalDoorway) return true;
+  if (ty % 8 === 0 && !horizontalDoorway) return true;
   return false;
 }
 
@@ -420,8 +412,26 @@ function roomIndexFor(x: number, y: number) {
   return room.row * ROOM_COLS + room.col;
 }
 
+function chaseWaypoint(from: { x: number; y: number }, target: { x: number; y: number }) {
+  const sourceRoom = roomFor(from.x, from.y);
+  const targetRoom = roomFor(target.x, target.y);
+  if (sourceRoom.col === targetRoom.col && sourceRoom.row === targetRoom.row) return target;
+  if (sourceRoom.col !== targetRoom.col) {
+    const direction = targetRoom.col > sourceRoom.col ? 1 : -1;
+    return {
+      x: (sourceRoom.col + (direction > 0 ? 1 : 0)) * 8 * TILE + direction * 18,
+      y: (sourceRoom.row * 8 + 4.5) * TILE,
+    };
+  }
+  const direction = targetRoom.row > sourceRoom.row ? 1 : -1;
+  return {
+    x: (sourceRoom.col * 8 + 4.5) * TILE,
+    y: (sourceRoom.row + (direction > 0 ? 1 : 0)) * 8 * TILE + direction * 18,
+  };
+}
+
 function encounterLocks(kind: RoomKind) {
-  return ["ambush", "trap", "survival", "elite", "puzzle", "boss"].includes(kind);
+  return kind === "boss";
 }
 
 function isRoomLocked(game: Game, roomIndex: number) {
@@ -506,6 +516,22 @@ function selectClassEquipmentDrop(classId: PlayerClassId, rareBoost = false) {
   const preferred = compatible.filter((id) => rareBoost ? EQUIPMENT[id].rarity !== "common" : true);
   const pool = preferred.length ? preferred : compatible;
   return EQUIPMENT[pool[Math.floor(Math.random() * pool.length)] ?? "scrap-plate"];
+}
+
+function releaseLootAmbush(game: Game, chest: Chest) {
+  const room = roomFor(chest.x, chest.y);
+  const roomIndex = room.row * ROOM_COLS + room.col;
+  const progression = .86 + (roomIndex / Math.max(1, game.roomKinds.length - 1)) * .24;
+  const spawns: Array<{ kind: EnemyKind; tx: number; ty: number }> = [
+    { kind: "skitter", tx: 5.5, ty: 2.5 },
+    { kind: "skitter", tx: 6, ty: 5.5 },
+    { kind: Math.random() < .5 ? "spitter" : "warden", tx: 4.5, ty: 3.5 },
+  ];
+  spawns.forEach(({ kind, tx, ty }) => {
+    const stats = enemyStats[kind];
+    const hp = Math.round(stats.hp * progression);
+    game.enemies.push({ id:game.nextId++, kind, x:(room.col * 8 + tx) * TILE, y:(room.row * 8 + ty) * TILE, hp, maxHp:hp, speed:stats.speed, damage:Math.round(stats.damage * progression), cooldown:.4 + Math.random() * .8, flash:.2, windup:0, recovery:.25, elite:false, homeRoomIndex:roomIndex });
+  });
 }
 
 function equipItem(game: Game, id: EquipmentId) {
@@ -609,20 +635,6 @@ function renderGame(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.fillStyle = "#06100c";
   ctx.fillRect(22 * TILE + 10, 14 * TILE + 8, 12, 18);
   if (!gateOpen) ctx.fillRect(22 * TILE + 5, 14 * TILE + 13, 22, 5);
-
-  game.traps.forEach((trap) => {
-    const active = (game.elapsed + trap.phase) % 1.5 < 0.72;
-    ctx.fillStyle = active ? "#ef4444" : "#3b2828";
-    ctx.fillRect(trap.x - 13, trap.y - 13, 26, 26);
-    ctx.fillStyle = active ? "#fca5a5" : "#6b3f3f";
-    for (let i = -8; i <= 8; i += 8) {
-      ctx.beginPath();
-      ctx.moveTo(trap.x + i - 3, trap.y + 8);
-      ctx.lineTo(trap.x + i, trap.y - 8);
-      ctx.lineTo(trap.x + i + 3, trap.y + 8);
-      ctx.fill();
-    }
-  });
 
   game.pylons.forEach((pylon) => {
     ctx.fillStyle = pylon.active ? "#f4d35e" : "#7b5c20";
@@ -1295,28 +1307,28 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.lineWidth = 2;
   if (current.col > 0) {
     const hint = routeHint(game.roomKinds[currentRoomIndex - 1]);
-    ctx.fillRect(roomLeft + 2, doorY - 24, 7, 48);
-    ctx.strokeRect(roomLeft + 1, doorY - 27, 13, 54);
+    ctx.fillRect(roomLeft + 2, doorY - 38, 7, 76);
+    ctx.strokeRect(roomLeft + 1, doorY - 42, 13, 84);
     drawPixelText(ctx, `◀ ${hint.icon}`, roomLeft + 28, doorY + 4, hint.color, "center");
     drawPixelText(ctx, hint.label, roomLeft + 40, doorY - 12, hint.color, "center");
   }
   if (current.col < ROOM_COLS - 1) {
     const hint = routeHint(game.roomKinds[currentRoomIndex + 1]);
-    ctx.fillRect(roomLeft + 8 * TILE - 9, doorY - 24, 7, 48);
-    ctx.strokeRect(roomLeft + 8 * TILE - 14, doorY - 27, 13, 54);
+    ctx.fillRect(roomLeft + 8 * TILE - 9, doorY - 38, 7, 76);
+    ctx.strokeRect(roomLeft + 8 * TILE - 14, doorY - 42, 13, 84);
     drawPixelText(ctx, `${hint.icon} ▶`, roomLeft + 8 * TILE - 28, doorY + 4, hint.color, "center");
     drawPixelText(ctx, hint.label, roomLeft + 8 * TILE - 40, doorY - 12, hint.color, "center");
   }
   if (current.row > 0) {
     const hint = routeHint(game.roomKinds[currentRoomIndex - ROOM_COLS]);
-    ctx.fillRect(doorX - 24, roomTop + 2, 48, 7);
-    ctx.strokeRect(doorX - 27, roomTop + 1, 54, 13);
+    ctx.fillRect(doorX - 38, roomTop + 2, 76, 7);
+    ctx.strokeRect(doorX - 42, roomTop + 1, 84, 13);
     drawPixelText(ctx, `▲ ${hint.icon} ${hint.label}`, doorX, roomTop + 27, hint.color, "center");
   }
   if (current.row < ROOM_ROWS - 1) {
     const hint = routeHint(game.roomKinds[currentRoomIndex + ROOM_COLS]);
-    ctx.fillRect(doorX - 24, roomTop + 8 * TILE - 9, 48, 7);
-    ctx.strokeRect(doorX - 27, roomTop + 8 * TILE - 14, 54, 13);
+    ctx.fillRect(doorX - 38, roomTop + 8 * TILE - 9, 76, 7);
+    ctx.strokeRect(doorX - 42, roomTop + 8 * TILE - 14, 84, 13);
     drawPixelText(ctx, `▼ ${hint.icon} ${hint.label}`, doorX, roomTop + 8 * TILE - 20, hint.color, "center");
   }
   ctx.restore();
@@ -1342,20 +1354,6 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.fillStyle = "#06100c";
   ctx.fillRect(EXIT_X - 6, EXIT_Y - 8, 12, 18);
   if (!gateOpen) ctx.fillRect(EXIT_X - 11, EXIT_Y - 3, 22, 5);
-
-  game.traps.forEach((trap) => {
-    const active = (game.elapsed + trap.phase) % 1.5 < .72;
-    ctx.fillStyle = active ? "#ef4444" : "#3b2828";
-    ctx.fillRect(trap.x - 13, trap.y - 13, 26, 26);
-    ctx.fillStyle = active ? "#fca5a5" : "#6b3f3f";
-    for (let i = -8; i <= 8; i += 8) {
-      ctx.beginPath();
-      ctx.moveTo(trap.x + i - 3, trap.y + 8);
-      ctx.lineTo(trap.x + i, trap.y - 8);
-      ctx.lineTo(trap.x + i + 3, trap.y + 8);
-      ctx.fill();
-    }
-  });
 
   game.pylons.forEach((pylon) => {
     const wave = Math.sin(game.elapsed * 5) * 3;
@@ -1650,18 +1648,6 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     setMessage(game, "REST NODE CLAIMED // CHOOSE ONE RUN UPGRADE");
   }
 
-  for (const trap of game.traps) {
-    const active = (game.elapsed + trap.phase) % 1.5 < 0.72;
-    if (active && dist(trap, p) < 19 && p.invuln <= 0) {
-      hurtPlayer(game, 12, "Floor spikes");
-      p.invuln = 0.8;
-      game.shake = .18;
-      burst(game, p.x, p.y, "#ff4d6d", 8, 105);
-      game.hype = Math.max(1, game.hype - 0.2);
-      setMessage(game, "FLOOR SPIKES // THE AUDIENCE WINCES");
-    }
-  }
-
   const activePylons = game.pylons.filter((pylon) => pylon.active).length;
   const playerRoom = roomFor(p.x, p.y);
   game.enemies.forEach((enemy) => {
@@ -1669,16 +1655,23 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     enemy.flash = Math.max(0, enemy.flash - dt);
     enemy.recovery = Math.max(0, enemy.recovery - dt);
     const enemyRoom = roomFor(enemy.x, enemy.y);
-    if (enemyRoom.col !== playerRoom.col || enemyRoom.row !== playerRoom.row) return;
-    if (!game.discoveredEnemies.includes(enemy.kind)) game.discoveredEnemies.push(enemy.kind);
+    const enemyRoomIndex = enemyRoom.row * ROOM_COLS + enemyRoom.col;
+    const sharesPlayerRoom = enemyRoom.col === playerRoom.col && enemyRoom.row === playerRoom.row;
+    if (!sharesPlayerRoom && !game.roomStarted[enemyRoomIndex]) return;
+    if (sharesPlayerRoom && !game.discoveredEnemies.includes(enemy.kind)) game.discoveredEnemies.push(enemy.kind);
     if (enemy.kind === "boss" && activePylons < 3) return;
-    const dx = p.x - enemy.x;
-    const dy = p.y - enemy.y;
+    const chaseTarget = chaseWaypoint(enemy, p);
+    const dx = chaseTarget.x - enemy.x;
+    const dy = chaseTarget.y - enemy.y;
     const distance = Math.hypot(dx, dy);
-    if (distance > 235) return;
+    if (sharesPlayerRoom && distance > 235) return;
     const nx = dx / Math.max(1, distance);
     const ny = dy / Math.max(1, distance);
     if (enemy.recovery > 0) return;
+    if (!sharesPlayerRoom) {
+      moveEntity(enemy, nx * enemy.speed, ny * enemy.speed, dt, enemy.kind === "boss" ? 17 : 11);
+      return;
+    }
     if (enemy.kind === "healer") {
       const ally = game.enemies
         .filter((candidate) => candidate.id !== enemy.id && roomIndexFor(candidate.x, candidate.y) === currentRoomIndex && candidate.hp < candidate.maxHp)
@@ -1848,7 +1841,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
 
   const encounterIndex = roomIndexFor(p.x, p.y);
   const encounterKind = game.roomKinds[encounterIndex];
-  const remainingInRoom = game.enemies.filter((enemy) => roomIndexFor(enemy.x, enemy.y) === encounterIndex).length;
+  const remainingInRoom = game.enemies.filter((enemy) => enemy.homeRoomIndex === encounterIndex).length;
   const chestInRoomOpened = game.chests.some((chest) => roomIndexFor(chest.x, chest.y) === encounterIndex && chest.open);
   const pylonInRoomActive = game.pylons.some((pylon) => roomIndexFor(pylon.x, pylon.y) === encounterIndex && pylon.active);
   if (encounterKind === "boss" && remainingInRoom === 0) game.bossDead = true;
@@ -1856,7 +1849,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
   if (encounterKind === "safe") encounterComplete = game.safeUsed;
   if (["ambush", "elite"].includes(encounterKind)) encounterComplete = remainingInRoom === 0;
   if (encounterKind === "survival") encounterComplete = game.roomTimers[encounterIndex] >= 25 && remainingInRoom === 0;
-  if (encounterKind === "trap") encounterComplete = game.roomTimers[encounterIndex] >= 15;
+  if (encounterKind === "loot") encounterComplete = chestInRoomOpened && remainingInRoom === 0;
   if (encounterKind === "puzzle") encounterComplete = pylonInRoomActive || remainingInRoom === 0;
   if (encounterKind === "treasure") encounterComplete = chestInRoomOpened;
   if (encounterKind === "broadcast") encounterComplete = game.roomTimers[encounterIndex] >= 8 && remainingInRoom === 0;
@@ -2443,15 +2436,24 @@ export default function Home() {
       chest.open = true;
       chest.openFx = .8;
       burst(game, chest.x, chest.y, "#f4d35e", 14, 90);
+      const chestRoomKind = game.roomKinds[roomIndexFor(chest.x, chest.y)];
+      if (chestRoomKind === "loot" && Math.random() < .5) {
+        releaseLootAmbush(game, chest);
+        game.hype += 4;
+        game.shake = .22;
+        setMessage(game, "GAMBLER'S CACHE // AMBUSH RELEASED — THEY CAN FOLLOW");
+        beep(105, .2);
+        return;
+      }
       const lootTable: ItemKind[] = ["tonic", "bomb", "fury"];
       const firstKind = lootTable[Math.floor(Math.random() * lootTable.length)];
-      const equipment = selectClassEquipmentDrop(p.classId, game.roomKinds[roomIndexFor(chest.x, chest.y)] === "elite");
+      const equipment = selectClassEquipmentDrop(p.classId, chestRoomKind === "elite");
       game.groundItems.push(
         { id: game.nextId++, kind: firstKind, x: chest.x - 18, y: chest.y + 18, phase: Math.random() * 6 },
       );
       game.groundEquipment.push({ id: game.nextId++, equipmentId: equipment.id, x: chest.x + 18, y: chest.y + 18, phase: Math.random() * 6 });
       game.score += 180;
-      setMessage(game, `CACHE OPEN // ${equipment.rarity.toUpperCase()} ${equipment.slot.toUpperCase()} DROP`);
+      setMessage(game, chestRoomKind === "loot" ? `GAMBLER'S CACHE // PAYOUT — ${equipment.rarity.toUpperCase()} ${equipment.slot.toUpperCase()}` : `CACHE OPEN // ${equipment.rarity.toUpperCase()} ${equipment.slot.toUpperCase()} DROP`);
       beep(610, 0.15);
       return;
     }
