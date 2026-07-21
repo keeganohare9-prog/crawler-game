@@ -239,13 +239,14 @@ const ROOM_GUIDE: Array<{ kind: RoomKind; name: string; copy: string }> = [
   { kind: "elite", name: "Elite", copy: "A dangerous squad guarding stronger loot." },
   { kind: "puzzle", name: "Puzzle", copy: "Activate its signal objective or clear its defender." },
   { kind: "broadcast", name: "Broadcast", copy: "A ratings challenge that rewards speed and aggression." },
-  { kind: "boss", name: "Boss", copy: "The final arena. It stays sealed until all pylons are live." },
+  { kind: "boss", name: "Boss", copy: "Clearly marked with a skull. You may scout it early; the doors only seal once all pylons power the fight." },
 ];
 
 function routeHint(kind: RoomKind) {
   if (kind === "safe") return { icon: "+", label: "REST", color: "#34d399" };
   if (["treasure", "loot", "broadcast"].includes(kind)) return { icon: "$", label: "REWARD", color: "#f4d35e" };
-  if (["elite", "boss", "survival"].includes(kind)) return { icon: "!", label: "DANGER", color: "#ff4d6d" };
+  if (kind === "boss") return { icon: "☠", label: "BOSS", color: "#ff4d6d" };
+  if (["elite", "survival"].includes(kind)) return { icon: "!", label: "DANGER", color: "#ff4d6d" };
   if (kind === "puzzle") return { icon: "◆", label: "SIGNAL", color: "#76c7dc" };
   return { icon: "?", label: "UNKNOWN", color: "#9aaba4" };
 }
@@ -379,8 +380,8 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
 
 function isWallTile(tx: number, ty: number) {
   if (tx <= 0 || ty <= 0 || tx >= MAP_W - 1 || ty >= MAP_H - 1) return true;
-  const verticalDoorway = [3, 4, 5].includes(((ty % 8) + 8) % 8);
-  const horizontalDoorway = [3, 4, 5].includes(((tx % 8) + 8) % 8);
+  const verticalDoorway = [2, 3, 4, 5, 6].includes(((ty % 8) + 8) % 8);
+  const horizontalDoorway = [2, 3, 4, 5, 6].includes(((tx % 8) + 8) % 8);
   if (tx % 8 === 0 && !verticalDoorway) return true;
   if (ty % 8 === 0 && !horizontalDoorway) return true;
   return false;
@@ -435,7 +436,8 @@ function encounterLocks(kind: RoomKind) {
 }
 
 function isRoomLocked(game: Game, roomIndex: number) {
-  return Boolean(game.roomStarted[roomIndex] && !game.roomCleared[roomIndex] && encounterLocks(game.roomKinds[roomIndex]));
+  const bossPowered = game.pylons.filter((pylon) => pylon.active).length === 3;
+  return Boolean(bossPowered && game.roomStarted[roomIndex] && !game.roomCleared[roomIndex] && encounterLocks(game.roomKinds[roomIndex]));
 }
 
 function burst(game: Game, x: number, y: number, color: string, count: number, speed = 80) {
@@ -1254,7 +1256,7 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
   const current = roomFor(game.player.x, game.player.y);
-  const roomNumber = current.row * 3 + current.col + 1;
+  const roomNumber = current.row * ROOM_COLS + current.col + 1;
   const camX = current.col * 8 * TILE + 4 * TILE;
   const camY = current.row * 8 * TILE + 4 * TILE;
   const shakeX = game.shake > 0 ? (Math.random() - .5) * 7 : 0;
@@ -1307,28 +1309,28 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.lineWidth = 2;
   if (current.col > 0) {
     const hint = routeHint(game.roomKinds[currentRoomIndex - 1]);
-    ctx.fillRect(roomLeft + 2, doorY - 38, 7, 76);
-    ctx.strokeRect(roomLeft + 1, doorY - 42, 13, 84);
+    ctx.fillRect(roomLeft + 2, doorY - 58, 7, 116);
+    ctx.strokeRect(roomLeft + 1, doorY - 62, 13, 124);
     drawPixelText(ctx, `◀ ${hint.icon}`, roomLeft + 28, doorY + 4, hint.color, "center");
     drawPixelText(ctx, hint.label, roomLeft + 40, doorY - 12, hint.color, "center");
   }
   if (current.col < ROOM_COLS - 1) {
     const hint = routeHint(game.roomKinds[currentRoomIndex + 1]);
-    ctx.fillRect(roomLeft + 8 * TILE - 9, doorY - 38, 7, 76);
-    ctx.strokeRect(roomLeft + 8 * TILE - 14, doorY - 42, 13, 84);
+    ctx.fillRect(roomLeft + 8 * TILE - 9, doorY - 58, 7, 116);
+    ctx.strokeRect(roomLeft + 8 * TILE - 14, doorY - 62, 13, 124);
     drawPixelText(ctx, `${hint.icon} ▶`, roomLeft + 8 * TILE - 28, doorY + 4, hint.color, "center");
     drawPixelText(ctx, hint.label, roomLeft + 8 * TILE - 40, doorY - 12, hint.color, "center");
   }
   if (current.row > 0) {
     const hint = routeHint(game.roomKinds[currentRoomIndex - ROOM_COLS]);
-    ctx.fillRect(doorX - 38, roomTop + 2, 76, 7);
-    ctx.strokeRect(doorX - 42, roomTop + 1, 84, 13);
+    ctx.fillRect(doorX - 58, roomTop + 2, 116, 7);
+    ctx.strokeRect(doorX - 62, roomTop + 1, 124, 13);
     drawPixelText(ctx, `▲ ${hint.icon} ${hint.label}`, doorX, roomTop + 27, hint.color, "center");
   }
   if (current.row < ROOM_ROWS - 1) {
     const hint = routeHint(game.roomKinds[currentRoomIndex + ROOM_COLS]);
-    ctx.fillRect(doorX - 38, roomTop + 8 * TILE - 9, 76, 7);
-    ctx.strokeRect(doorX - 42, roomTop + 8 * TILE - 14, 84, 13);
+    ctx.fillRect(doorX - 58, roomTop + 8 * TILE - 9, 116, 7);
+    ctx.strokeRect(doorX - 62, roomTop + 8 * TILE - 14, 124, 13);
     drawPixelText(ctx, `▼ ${hint.icon} ${hint.label}`, doorX, roomTop + 8 * TILE - 20, hint.color, "center");
   }
   ctx.restore();
@@ -1594,8 +1596,6 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     p.dirY = my;
   }
   p.moving = Boolean(mx || my);
-  const previousX = p.x;
-  const previousY = p.y;
   const equipmentSpeed = hasEquipment(game, "runner-boots") ? 1.1 : 1;
   moveEntity(p, mx * p.speed * equipmentSpeed, my * p.speed * equipmentSpeed, dt, 9);
   if (p.moving && p.stepTimer <= 0) {
@@ -1605,17 +1605,12 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
 
   let currentRoomIndex = roomIndexFor(p.x, p.y);
   const activePylonCount = game.pylons.filter((pylon) => pylon.active).length;
-  if (game.roomKinds[currentRoomIndex] === "boss" && activePylonCount < 3) {
-    p.x = previousX;
-    p.y = previousY;
-    currentRoomIndex = roomIndexFor(p.x, p.y);
-    setMessage(game, `BOSS GATE SEALED // ${3 - activePylonCount} SIGNAL${3 - activePylonCount === 1 ? "" : "S"} MISSING`);
-  }
   if (currentRoomIndex !== game.currentRoomIndex) {
     game.currentRoomIndex = currentRoomIndex;
     game.roomStarted[currentRoomIndex] = true;
     const kind = game.roomKinds[currentRoomIndex];
-    setMessage(game, `${kind.toUpperCase()} ENCOUNTER // ${encounterLocks(kind) ? "DOORS LOCKING" : "SIGNAL ACQUIRED"}`);
+    if (kind === "boss" && activePylonCount < 3) setMessage(game, `WARDEN DORMANT // ${3 - activePylonCount} SIGNAL${3 - activePylonCount === 1 ? "" : "S"} MISSING — EXIT REMAINS OPEN`);
+    else setMessage(game, `${kind.toUpperCase()} ENCOUNTER // ${encounterLocks(kind) ? "DOORS LOCKING" : "SIGNAL ACQUIRED"}`);
   }
   const roomId = String(currentRoomIndex);
   if (!game.explored.has(roomId)) {
@@ -2844,7 +2839,7 @@ function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection
                   <li><b>Explore.</b> Only your current room is visible. Doorways reveal nothing about what waits beyond.</li>
                   <li><b>Power the feed.</b> Find and activate three golden signal pylons with <kbd>F</kbd>.</li>
                   <li><b>Get stronger.</b> Open caches, collect items, swap weapons, and choose upgrades in safe rooms.</li>
-                  <li><b>Beat the Warden.</b> The boss gate opens after all pylons are active. Defeat it, then use the green exit.</li>
+                  <li><b>Beat the Warden.</b> Scout the skull-marked boss room early if you find it. All three pylons awaken the Warden and seal the arena until it falls.</li>
                 </ol>
                 <div className="guide-callout"><strong>HYPE = SCORE POWER</strong><span>Clear rooms and complete audience dares to raise your multiplier and trigger sponsor drops.</span></div>
               </div>

@@ -50,8 +50,11 @@ test("uses wide unlocked doorways and Gambler's Cache rooms", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/game/floor.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(page, /\[3, 4, 5\]\.includes/);
+  assert.match(page, /\[2, 3, 4, 5, 6\]\.includes/);
   assert.match(page, /return kind === "boss"/);
+  assert.match(page, /bossPowered/);
+  assert.match(page, /label: "BOSS"/);
+  assert.doesNotMatch(page, /BOSS GATE SEALED/);
   assert.match(page, /function chaseWaypoint/);
   assert.match(page, /Math\.random\(\) < \.5/);
   assert.match(page, /releaseLootAmbush/);
