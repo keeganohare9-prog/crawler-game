@@ -5,6 +5,7 @@ import { generateFloor, type RoomKind } from "./game/floor";
 import { WEAPONS, getWeapon, selectWeaponDrop, type WeaponId } from "./game/combat-content";
 import { EQUIPMENT, EQUIPMENT_IDS, selectEquipmentDrop, type EquipmentId, type EquipmentSlot } from "./game/equipment";
 import { AUDIENCE_DARES, PERMANENT_UNLOCKS, RUN_UPGRADES, bossPhaseForHealth, chooseAudienceDares, chooseSafeRoomUpgrades, newlyEarnedUnlocks, sponsorRewardsCrossed, summarizeRun, type RunStats, type RunUpgradeId } from "./game/progression";
+import { PLAYER_CLASSES, PLAYER_CLASS_IDS, type PlayerClassId } from "./game/classes";
 
 const TILE = 32;
 const ROOM_COLS = 4;
@@ -34,7 +35,8 @@ type Enemy = {
   recovery: number;
   elite: boolean;
 };
-type Projectile = { x: number; y: number; vx: number; vy: number; life: number; damage: number; owner?: "enemy" | "player"; pierce?: number; weaponId?: WeaponId };
+type ProjectileKind = "enemy" | "scrap" | "arc-bolt" | "arrow" | "power-arrow";
+type Projectile = { x: number; y: number; vx: number; vy: number; life: number; damage: number; owner?: "enemy" | "player"; pierce?: number; weaponId?: WeaponId; kind?: ProjectileKind; splash?: number; splashDamage?: number; traveled?: number; slow?: number };
 type Particle = { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; size: number };
 type Pylon = { x: number; y: number; active: boolean };
 type Chest = { x: number; y: number; open: boolean; openFx: number };
@@ -43,16 +45,19 @@ type GroundItem = { id: number; kind: ItemKind; x: number; y: number; phase: num
 type GroundWeapon = { id: number; weaponId: WeaponId; x: number; y: number; phase: number };
 type GroundEquipment = { id: number; equipmentId: EquipmentId; x: number; y: number; phase: number };
 type Trap = { x: number; y: number; phase: number };
-type Screen = "title" | "playing" | "paused" | "upgrade" | "won" | "lost";
-type HelpSection = "mission" | "controls" | "arsenal" | "enemies" | "rooms";
+type Screen = "title" | "class-select" | "playing" | "paused" | "upgrade" | "won" | "lost";
+type HelpSection = "mission" | "classes" | "controls" | "arsenal" | "enemies" | "rooms";
 type Game = {
   screen: Screen;
   player: {
+    classId: PlayerClassId;
     x: number;
     y: number;
     hp: number;
     maxHp: number;
     stamina: number;
+    classResource: number;
+    reloadTime: number;
     damage: number;
     speed: number;
     dirX: number;
@@ -69,6 +74,7 @@ type Game = {
     ammo: number;
     moving: boolean;
     stepTimer: number;
+    heavyFx: number;
   };
   enemies: Enemy[];
   projectiles: Projectile[];
@@ -123,6 +129,11 @@ type Hud = {
   hp: number;
   maxHp: number;
   stamina: number;
+  classId: PlayerClassId;
+  className: string;
+  resourceName: string;
+  classResource: number;
+  classResourceMax: number;
   time: number;
   score: number;
   hype: number;
@@ -160,6 +171,11 @@ const initialHud: Hud = {
   hp: 100,
   maxHp: 100,
   stamina: 100,
+  classId: "knight",
+  className: "Knight",
+  resourceName: "Drive",
+  classResource: 100,
+  classResourceMax: 100,
   time: 720,
   score: 0,
   hype: 1,
@@ -231,7 +247,8 @@ function routeHint(kind: RoomKind) {
   return { icon: "?", label: "UNKNOWN", color: "#9aaba4" };
 }
 
-function makeGame(screen: Screen = "title", floorSeed = 40_413): Game {
+function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerClassId = "knight"): Game {
+  const playerClass = PLAYER_CLASSES[classId];
   const floor = generateFloor(floorSeed, { roomCount: ROOM_COLS * ROOM_ROWS });
   const roomKinds = floor.rooms.map((room) => room.kind);
   if (["elite", "survival", "broadcast"].includes(roomKinds[1])) roomKinds[1] = "ambush";
@@ -283,18 +300,21 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413): Game {
     const row = Math.floor(index / ROOM_COLS);
     return { x: (col * 8 + 4.5) * TILE, y: (row * 8 + 4.5) * TILE, active: false };
   });
-  const dare = chooseAudienceDares(floorSeed, [], 1)[0] ?? AUDIENCE_DARES[4];
+  const dare = chooseAudienceDares(floorSeed, classId === "knight" ? [] : ["close_quarters"], 1)[0] ?? AUDIENCE_DARES[0];
 
   return {
     screen,
     player: {
+      classId,
       x: 2.5 * TILE,
       y: 2.5 * TILE,
-      hp: 100,
-      maxHp: 100,
+      hp: playerClass.hp,
+      maxHp: playerClass.hp,
       stamina: 100,
+      classResource: playerClass.resourceMax,
+      reloadTime: 0,
       damage: 22,
-      speed: 122,
+      speed: playerClass.speed,
       dirX: 1,
       dirY: 0,
       attackCd: 0,
@@ -309,6 +329,7 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413): Game {
       ammo: 0,
       moving: false,
       stepTimer: 0,
+      heavyFx: 0,
     },
     enemies,
     projectiles: [],
@@ -471,6 +492,14 @@ function setMessage(game: Game, message: string) {
 
 function hasEquipment(game: Game, id: EquipmentId) {
   return Object.values(game.equipped).includes(id);
+}
+
+function selectClassEquipmentDrop(classId: PlayerClassId, rareBoost = false) {
+  if (classId === "knight") return selectEquipmentDrop(Math.random, rareBoost);
+  const compatible: EquipmentId[] = ["scrap-plate", "shockweave-vest", "runner-boots", "phase-treads", "iron-stompers", "blood-token", "volatile-heart"];
+  const preferred = compatible.filter((id) => rareBoost ? EQUIPMENT[id].rarity !== "common" : true);
+  const pool = preferred.length ? preferred : compatible;
+  return EQUIPMENT[pool[Math.floor(Math.random() * pool.length)] ?? "scrap-plate"];
 }
 
 function equipItem(game: Game, id: EquipmentId) {
@@ -1048,8 +1077,48 @@ function drawWeaponModel(ctx: CanvasRenderingContext2D, weaponId: WeaponId, time
   }
 }
 
+function drawRangedPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
+  const p = game.player;
+  const mage = p.classId === "mage";
+  const stride = p.moving ? Math.sin(game.elapsed * 13) : 0;
+  const bob = p.moving ? -Math.abs(stride) * 2 : Math.sin(game.elapsed * 3) * .5;
+  const angle = Math.atan2(p.dirY, p.dirX);
+  ctx.save();
+  ctx.translate(Math.round(p.x), Math.round(p.y + bob));
+  ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.fillRect(-14, 13 - bob, 28, 6);
+  if (p.invuln <= 0 || Math.floor(game.elapsed * 20) % 2 === 0) {
+    ctx.fillStyle = mage ? "#281b46" : "#234334";
+    ctx.fillRect(-9, 6 + stride * 2, 7, 11); ctx.fillRect(2, 6 - stride * 2, 7, 11);
+    ctx.fillStyle = mage ? "#60458f" : "#315b38";
+    ctx.fillRect(-11, -8, 22, 22);
+    ctx.fillStyle = mage ? "#a78bfa" : "#34d399";
+    ctx.fillRect(-8, -6, 5, 14); ctx.fillRect(-12, 5, 24, 4);
+    ctx.fillStyle = "#efc39f"; ctx.fillRect(-8, -18, 16, 12);
+    ctx.fillStyle = mage ? "#dcd3ff" : "#79502f";
+    if (mage) { ctx.fillRect(-11, -23, 22, 7); ctx.fillRect(-7, -28, 14, 5); }
+    else { ctx.fillRect(-10, -20, 20, 5); ctx.fillRect(-10, -16, 5, 5); }
+    ctx.fillStyle = "#17201e"; ctx.fillRect(p.dirX >= 0 ? 2 : -5, -14, 3, 3);
+  }
+  ctx.rotate(angle);
+  if (mage) {
+    ctx.strokeStyle = "#795ab9"; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(4, 9); ctx.lineTo(28, -9); ctx.stroke();
+    ctx.fillStyle = "#dcd3ff"; ctx.fillRect(25, -13, 8, 8);
+    ctx.strokeStyle = `rgba(167,139,250,${.55 + Math.sin(game.elapsed * 9) * .25})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(29, -9, 8, 0, Math.PI * 2); ctx.stroke();
+  } else {
+    ctx.strokeStyle = "#d6b06a"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(18, 0, 20, -1.2, 1.2); ctx.stroke();
+    ctx.strokeStyle = "#d8ffe9"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(25, -19); ctx.lineTo(25, 19); ctx.stroke();
+    ctx.fillStyle = "#f4d35e"; ctx.fillRect(-17, -10, 6, 25);
+  }
+  ctx.restore();
+  if (p.heavyFx > 0) {
+    ctx.save(); ctx.translate(p.x, p.y); ctx.strokeStyle = mage ? `rgba(167,139,250,${p.heavyFx})` : `rgba(52,211,153,${p.heavyFx})`; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(p.dirX * (mage ? 95 : 28), p.dirY * (mage ? 95 : 28), mage ? 64 * (1 - p.heavyFx * .35) : 22, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+  }
+}
+
 function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
   const p = game.player;
+  if (p.classId !== "knight") { drawRangedPlayerSprite(ctx, game); return; }
   const weapon = getWeapon(p.weaponId);
   const stride = p.moving ? Math.sin(game.elapsed * 13) : 0;
   const bob = p.moving ? Math.abs(stride) * -2 : Math.sin(game.elapsed * 3) * .5;
@@ -1139,6 +1208,12 @@ function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
       if (p.weaponId === "twin-knives") { ctx.beginPath(); ctx.arc(0, 0, 27, -weapon.arcRadians / 2 + .25, weapon.arcRadians / 2 - .25); ctx.stroke(); }
       if (p.weaponId === "cleaver") { ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, 0, 47, -.65, .65); ctx.stroke(); }
     }
+    ctx.restore();
+  }
+  if (p.heavyFx > 0) {
+    ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(facingAngle);
+    ctx.strokeStyle = `rgba(255,243,176,${Math.min(1, p.heavyFx * 2)})`; ctx.lineWidth = 7;
+    ctx.beginPath(); ctx.arc(0, 0, Math.max(38, weapon.range), -Math.min(Math.PI, weapon.arcRadians * 1.35) / 2, Math.min(Math.PI, weapon.arcRadians * 1.35) / 2); ctx.stroke();
     ctx.restore();
   }
 }
@@ -1344,12 +1419,21 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   });
 
   game.projectiles.forEach((shot) => {
-    ctx.fillStyle = "rgba(255,77,109,.28)";
-    ctx.fillRect(shot.x - 8, shot.y - 8, 16, 16);
-    ctx.fillStyle = "#ff6b6b";
-    ctx.fillRect(shot.x - 4, shot.y - 4, 8, 8);
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(shot.x - 2, shot.y - 2, 4, 4);
+    if (shot.kind === "arc-bolt") {
+      ctx.fillStyle = "rgba(167,139,250,.25)"; ctx.beginPath(); ctx.arc(shot.x, shot.y, 10, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#a78bfa"; ctx.fillRect(shot.x - 5, shot.y - 5, 10, 10);
+      ctx.fillStyle = "#fff"; ctx.fillRect(shot.x - 2, shot.y - 2, 4, 4);
+    } else if (shot.kind === "arrow" || shot.kind === "power-arrow") {
+      const angle = Math.atan2(shot.vy, shot.vx);
+      ctx.save(); ctx.translate(shot.x, shot.y); ctx.rotate(angle);
+      ctx.fillStyle = shot.kind === "power-arrow" ? "#d8ffe9" : "#d6b06a"; ctx.fillRect(-11, -1, shot.kind === "power-arrow" ? 28 : 22, shot.kind === "power-arrow" ? 3 : 2);
+      ctx.fillStyle = "#34d399"; ctx.fillRect(10, -4, 7, 8); ctx.fillRect(-13, -4, 4, 8); ctx.restore();
+    } else {
+      ctx.fillStyle = shot.owner === "player" ? "rgba(244,211,94,.3)" : "rgba(255,77,109,.28)";
+      ctx.fillRect(shot.x - 8, shot.y - 8, 16, 16);
+      ctx.fillStyle = shot.owner === "player" ? "#f4d35e" : "#ff6b6b"; ctx.fillRect(shot.x - 4, shot.y - 4, 8, 8);
+      ctx.fillStyle = "#fff"; ctx.fillRect(shot.x - 2, shot.y - 2, 4, 4);
+    }
   });
 
   game.particles.forEach((particle) => {
@@ -1428,11 +1512,20 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
   const p = game.player;
   p.attackCd = Math.max(0, p.attackCd - dt);
   p.attackFx = Math.max(0, p.attackFx - dt);
+  p.heavyFx = Math.max(0, p.heavyFx - dt);
   p.dodgeCd = Math.max(0, p.dodgeCd - dt);
   p.invuln = Math.max(0, p.invuln - dt);
   p.stepTimer = Math.max(0, p.stepTimer - dt);
   p.furyTime = Math.max(0, p.furyTime - dt);
   p.stamina = Math.min(100, p.stamina + dt * 24 * (game.upgrades.includes("second_wind") ? 1.2 : 1));
+  if (p.classId === "mage") p.classResource = Math.min(100, p.classResource + dt * 10);
+  if (p.classId === "archer" && p.reloadTime > 0) {
+    p.reloadTime = Math.max(0, p.reloadTime - dt);
+    if (p.reloadTime === 0) {
+      p.classResource = PLAYER_CLASSES.archer.resourceMax;
+      setMessage(game, "QUIVER READY // TWELVE ARROWS");
+    }
+  }
 
   game.particles = game.particles.filter((particle) => {
     particle.life -= dt;
@@ -1456,7 +1549,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
       game.player.maxHp += reward.maxHealth;
       game.player.hp += reward.maxHealth;
     }
-    if (threshold.id === "sponsor_cache") {
+    if (threshold.id === "sponsor_cache" && game.player.classId === "knight") {
       const rareWeapon = selectWeaponDrop(Math.random, { exclude: [game.player.weaponId], allowedRarities: ["rare"] });
       if (rareWeapon) game.groundWeapons.push({ id: game.nextId++, weaponId: rareWeapon.id, x: game.player.x + 24, y: game.player.y + 18, phase: 0 });
     }
@@ -1523,7 +1616,10 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     p.hp = p.maxHp;
     p.potions += 1;
     game.score += 200;
-    game.upgradeChoices = chooseSafeRoomUpgrades(game.floorSeed, [], 3).map((upgrade) => upgrade.id);
+    game.upgradeChoices = chooseSafeRoomUpgrades(game.floorSeed, [], 8)
+      .filter((upgrade) => p.classId === "knight" || !["razor_arc", "kinetic_return"].includes(upgrade.id))
+      .slice(0, 3)
+      .map((upgrade) => upgrade.id);
     game.screen = "upgrade";
     setMessage(game, "REST NODE CLAIMED // CHOOSE ONE RUN UPGRADE");
   }
@@ -1668,14 +1764,27 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     shot.life -= dt;
     shot.x += shot.vx * dt;
     shot.y += shot.vy * dt;
+    shot.traveled = (shot.traveled ?? 0) + Math.hypot(shot.vx, shot.vy) * dt;
     if (shot.life <= 0 || !canMove(shot.x, shot.y, 3)) return false;
     if (shot.owner === "player") {
       const target = game.enemies.find((enemy) => dist(shot, enemy) < 15);
       if (target) {
-        target.hp -= shot.damage;
-        game.weaponHits[shot.weaponId ?? game.player.weaponId]++;
+        let damage = shot.damage;
+        if ((shot.kind === "arrow" || shot.kind === "power-arrow") && (shot.traveled ?? 0) > 140) damage *= 1.25;
+        if (shot.kind === "arrow" && (shot.traveled ?? 0) < 55) damage *= .85;
+        target.hp -= damage;
+        if (game.player.classId === "knight") game.weaponHits[shot.weaponId ?? game.player.weaponId]++;
         target.flash = .14;
-        burst(game, target.x, target.y, "#f4d35e", 8, 100);
+        const color = shot.kind === "arc-bolt" ? "#a78bfa" : shot.kind === "arrow" || shot.kind === "power-arrow" ? "#34d399" : "#f4d35e";
+        burst(game, target.x, target.y, color, shot.kind === "power-arrow" ? 14 : 8, shot.kind === "power-arrow" ? 145 : 100);
+        if (shot.splash && shot.splashDamage) {
+          game.enemies.filter((enemy) => enemy.id !== target.id && dist(enemy, target) < shot.splash!).forEach((enemy) => {
+            enemy.hp -= shot.splashDamage!;
+            enemy.flash = .14;
+            burst(game, enemy.x, enemy.y, "#a78bfa", 6, 70);
+          });
+        }
+        if (shot.kind === "power-arrow") shot.damage *= .85;
         shot.pierce = (shot.pierce ?? 0) - 1;
         return (shot.pierce ?? -1) >= 0;
       }
@@ -1715,7 +1824,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     game.score += encounterKind === "boss" ? 1800 : encounterKind === "elite" ? 650 : 320;
     game.hype += encounterKind === "elite" ? 12 : 7;
     game.maxHype = Math.max(game.maxHype, game.hype);
-    if (["elite", "broadcast", "treasure"].includes(encounterKind)) {
+    if (p.classId === "knight" && ["elite", "broadcast", "treasure"].includes(encounterKind)) {
       const weapon = selectWeaponDrop(Math.random, { exclude: [p.weaponId] });
       if (weapon) {
         const room = roomFor(p.x, p.y);
@@ -1745,10 +1854,16 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
 function makeHud(game: Game): Hud {
   const pylons = game.pylons.filter((pylon) => pylon.active).length;
   const dare = AUDIENCE_DARES.find((entry) => entry.id === game.activeDareId) ?? AUDIENCE_DARES[0];
+  const playerClass = PLAYER_CLASSES[game.player.classId];
   return {
     hp: Math.ceil(game.player.hp),
     maxHp: game.player.maxHp,
     stamina: Math.ceil(game.player.stamina),
+    classId: game.player.classId,
+    className: playerClass.name,
+    resourceName: playerClass.resourceName,
+    classResource: Math.ceil(game.player.classId === "knight" ? game.player.stamina : game.player.classResource),
+    classResourceMax: playerClass.resourceMax,
     time: Math.ceil(game.time),
     score: Math.floor(game.score),
     hype: game.hype,
@@ -1758,8 +1873,8 @@ function makeHud(game: Game): Hud {
     bombs: game.player.bombs,
     furyVials: game.player.furyVials,
     furyTime: game.player.furyTime,
-    weaponName: getWeapon(game.player.weaponId).name,
-    ammo: game.player.ammo,
+    weaponName: game.player.classId === "mage" ? "Signal Grimoire" : game.player.classId === "archer" ? "Relay Recurve" : getWeapon(game.player.weaponId).name,
+    ammo: game.player.classId === "archer" ? game.player.classResource : game.player.ammo,
     nearbyEquipmentId: game.groundEquipment.find((drop) => dist(drop, game.player) < 42)?.equipmentId ?? null,
     equipmentNames: (Object.values(game.equipped).filter(Boolean) as EquipmentId[]).map((id) => EQUIPMENT[id].name),
     roomKind: game.roomKinds[game.currentRoomIndex] ?? "safe",
@@ -1800,6 +1915,7 @@ export default function Home() {
   const keysRef = useRef(new Set<string>());
   const audioRef = useRef<AudioContext | null>(null);
   const interactHoldTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shiftUsedForHeavy = useRef(false);
   const [screen, setScreen] = useState<Screen>("title");
   const [hud, setHud] = useState<Hud>(() => makeHud(gameRef.current));
   const [highScore, setHighScore] = useState(0);
@@ -1808,6 +1924,7 @@ export default function Home() {
   const [armoryOpen, setArmoryOpen] = useState(false);
   const [armory, setArmory] = useState<ArmorySnapshot>(EMPTY_ARMORY);
   const [starterWeapon, setStarterWeapon] = useState<WeaponId>("cleaver");
+  const [selectedClass, setSelectedClass] = useState<PlayerClassId>("knight");
   const helpPreviousScreen = useRef<Screen | null>(null);
 
   const beep = useCallback((frequency = 220, duration = 0.06) => {
@@ -1865,7 +1982,7 @@ export default function Home() {
   }, []);
 
   const startGame = useCallback(() => {
-    const nextGame = makeGame("playing", Math.floor(Math.random() * 1_000_000_000));
+    const nextGame = makeGame("playing", Math.floor(Math.random() * 1_000_000_000), selectedClass);
     nextGame.player.weaponId = starterWeapon;
     nextGame.player.ammo = getWeapon(starterWeapon).ammo ?? 0;
     gameRef.current = nextGame;
@@ -1874,7 +1991,14 @@ export default function Home() {
     setHud(makeHud(nextGame));
     beep(164, 0.1);
     canvasRef.current?.focus();
-  }, [beep, starterWeapon]);
+    localStorage.setItem("signal-depths-player-class", selectedClass);
+  }, [beep, selectedClass, starterWeapon]);
+
+  const openClassSelection = useCallback(() => {
+    gameRef.current.screen = "class-select";
+    setScreen("class-select");
+    beep(360, .08);
+  }, [beep]);
 
   const openHelp = useCallback(() => {
     const game = gameRef.current;
@@ -1923,6 +2047,40 @@ export default function Home() {
     if (game.screen !== "playing") return;
     const p = game.player;
     if (p.attackCd > 0) return;
+    if (p.classId === "mage") {
+      p.attackCd = .35;
+      p.attackFx = .24;
+      game.projectiles.push({
+        x: p.x + p.dirX * 18, y: p.y + p.dirY * 18,
+        vx: p.dirX * 270, vy: p.dirY * 270, life: .84,
+        damage: 14 * (p.furyTime > 0 ? 1.75 : 1), owner: "player", pierce: 0,
+        kind: "arc-bolt", splash: 26, splashDamage: 8 * (p.furyTime > 0 ? 1.75 : 1), traveled: 0,
+      });
+      burst(game, p.x + p.dirX * 20, p.y + p.dirY * 20, "#a78bfa", 8, 60);
+      beep(430, .09);
+      return;
+    }
+    if (p.classId === "archer") {
+      if (p.reloadTime > 0) { setMessage(game, "RESTRINGING QUIVER // HOLD THE LINE"); return; }
+      if (p.classResource <= 0) {
+        p.reloadTime = .95;
+        setMessage(game, "QUIVER EMPTY // RELOADING");
+        beep(80, .05);
+        return;
+      }
+      p.classResource--;
+      if (p.classResource <= 0) p.reloadTime = .95;
+      p.attackCd = .4;
+      p.attackFx = .2;
+      game.projectiles.push({
+        x: p.x + p.dirX * 20, y: p.y + p.dirY * 20,
+        vx: p.dirX * 560, vy: p.dirY * 560, life: .58,
+        damage: 19 * (p.furyTime > 0 ? 1.75 : 1), owner: "player", pierce: 0, kind: "arrow", traveled: 0,
+      });
+      burst(game, p.x - p.dirX * 8, p.y - p.dirY * 8, "#34d399", 4, 45);
+      beep(610, .045);
+      return;
+    }
     const weapon = getWeapon(p.weaponId);
     if (weapon.ammo !== null && p.ammo <= 0) {
       setMessage(game, `${weapon.name.toUpperCase()} // OUT OF AMMO`);
@@ -1988,17 +2146,113 @@ export default function Home() {
     else beep(180, 0.035);
   }, [beep]);
 
+  const heavyAttack = useCallback(() => {
+    const game = gameRef.current;
+    const p = game.player;
+    if (game.screen !== "playing" || p.attackCd > 0) return;
+    if (p.classId === "mage") {
+      if (p.classResource < 50) { setMessage(game, "GRAVITY SIGIL // NOT ENOUGH MANA"); beep(72, .05); return; }
+      p.classResource -= 50;
+      p.attackCd = .9;
+      p.heavyFx = .7;
+      const center = { x: p.x + p.dirX * 95, y: p.y + p.dirY * 95 };
+      let hits = 0;
+      game.enemies.forEach((enemy) => {
+        const distance = dist(enemy, center);
+        if (roomIndexFor(enemy.x, enemy.y) !== roomIndexFor(p.x, p.y) || distance >= 64) return;
+        if (enemy.kind === "boss" && game.pylons.filter((node) => node.active).length < 3) return;
+        enemy.hp -= (distance < 38 ? 36 : 22) * (p.furyTime > 0 ? 1.75 : 1);
+        enemy.flash = .22;
+        enemy.recovery = Math.max(enemy.recovery, enemy.kind === "boss" ? .18 : .55);
+        if (enemy.kind !== "boss") {
+          const dx = center.x - enemy.x;
+          const dy = center.y - enemy.y;
+          const length = Math.max(1, Math.hypot(dx, dy));
+          enemy.x += (dx / length) * 18;
+          enemy.y += (dy / length) * 18;
+        }
+        burst(game, enemy.x, enemy.y, "#a78bfa", 12, 105);
+        hits++;
+      });
+      burst(game, center.x, center.y, "#dcd3ff", 32, 185);
+      game.shake = hits ? .25 : .12;
+      game.hitStop = hits ? .07 : 0;
+      const dead = game.enemies.filter((enemy) => enemy.hp <= 0);
+      creditEnemyDeaths(game, dead);
+      game.enemies = game.enemies.filter((enemy) => enemy.hp > 0);
+      setMessage(game, `GRAVITY SIGIL // ${hits} TARGET${hits === 1 ? "" : "S"} BENT`);
+      beep(185, .22);
+      return;
+    }
+    if (p.classId === "archer") {
+      if (p.reloadTime > 0 || p.classResource < 3) { setMessage(game, "POWER SHOT // THREE ARROWS REQUIRED"); beep(72, .05); return; }
+      p.classResource -= 3;
+      if (p.classResource <= 0) p.reloadTime = .95;
+      p.attackCd = .9;
+      p.heavyFx = .72;
+      game.projectiles.push({
+        x: p.x + p.dirX * 22, y: p.y + p.dirY * 22,
+        vx: p.dirX * 650, vy: p.dirY * 650, life: .56,
+        damage: 42 * (p.furyTime > 0 ? 1.75 : 1), owner: "player", pierce: 2, kind: "power-arrow", traveled: 0,
+      });
+      game.shake = .16;
+      burst(game, p.x + p.dirX * 28, p.y + p.dirY * 28, "#d8ffe9", 14, 115);
+      setMessage(game, "POWER SHOT // LINE BREAKER LOOSED");
+      beep(820, .11);
+      return;
+    }
+    const weapon = getWeapon(p.weaponId);
+    if (p.stamina < 40) { setMessage(game, "COMMITTED STRIKE // NOT ENOUGH DRIVE"); beep(72, .05); return; }
+    if (weapon.ammo !== null && p.ammo < 2) { setMessage(game, `${weapon.name.toUpperCase()} // TWO ROUNDS REQUIRED`); beep(72, .05); return; }
+    p.stamina -= 40;
+    p.attackCd = Math.max(.62, weapon.cooldownMs / 1000 * 1.25);
+    p.heavyFx = .62;
+    game.weaponAttacks[p.weaponId]++;
+    if (p.weaponId === "scrap-launcher" && weapon.projectile) {
+      p.ammo -= 2;
+      game.projectiles.push({ x: p.x + p.dirX * 20, y: p.y + p.dirY * 20, vx: p.dirX * 430, vy: p.dirY * 430, life: .82, damage: weapon.damage * 1.65, owner: "player", pierce: 2, weaponId: p.weaponId, kind: "scrap", traveled: 0 });
+    } else {
+      let hits = 0;
+      game.enemies.forEach((enemy) => {
+        const dx = enemy.x - p.x;
+        const dy = enemy.y - p.y;
+        const distance = Math.hypot(dx, dy);
+        const facing = (dx * p.dirX + dy * p.dirY) / Math.max(1, distance);
+        if (distance < weapon.range * 1.15 && facing > Math.cos(Math.min(Math.PI, weapon.arcRadians * 1.35) / 2)) {
+          if (enemy.kind === "boss" && game.pylons.filter((node) => node.active).length < 3) return;
+          enemy.hp -= weapon.damage * weapon.attacksPerInput * 1.65 * (p.furyTime > 0 ? 1.75 : 1);
+          enemy.flash = .22;
+          const knockback = enemy.kind === "boss" ? weapon.knockback * .35 : weapon.knockback * 1.6;
+          enemy.x += p.dirX * knockback;
+          enemy.y += p.dirY * knockback;
+          burst(game, enemy.x, enemy.y, "#fff3b0", 15, 155);
+          hits++;
+        }
+      });
+      game.weaponHits[p.weaponId] += hits;
+      const dead = game.enemies.filter((enemy) => enemy.hp <= 0);
+      creditEnemyDeaths(game, dead);
+      game.enemies = game.enemies.filter((enemy) => enemy.hp > 0);
+      game.hitStop = hits ? .09 : 0;
+    }
+    game.shake = .28;
+    setMessage(game, `COMMITTED STRIKE // ${weapon.name.toUpperCase()}`);
+    beep(88, .16);
+  }, [beep]);
+
   const dodge = useCallback(() => {
     const game = gameRef.current;
     const p = game.player;
     if (game.screen !== "playing" || p.dodgeCd > 0 || p.stamina < 30) return;
     const phaseTreads = hasEquipment(game, "phase-treads");
     p.dodgeCd = phaseTreads ? .55 : 0.65;
-    p.invuln = 0.38 + game.upgrades.filter((id) => id === "phase_steps").length * .08 + (phaseTreads ? .1 : 0);
+    const classInvuln = p.classId === "mage" ? .46 : p.classId === "archer" ? .32 : .38;
+    const classDistance = p.classId === "mage" ? .8 : p.classId === "archer" ? 1.18 : 1;
+    p.invuln = classInvuln + game.upgrades.filter((id) => id === "phase_steps").length * .08 + (phaseTreads ? .1 : 0);
     p.stamina -= 30;
-    moveEntity(p, p.dirX * 390 * (game.upgrades.includes("phase_steps") ? 1.2 : 1) * (phaseTreads ? 1.2 : 1), p.dirY * 390 * (game.upgrades.includes("phase_steps") ? 1.2 : 1) * (phaseTreads ? 1.2 : 1), 0.11, 9);
+    moveEntity(p, p.dirX * 390 * classDistance * (game.upgrades.includes("phase_steps") ? 1.2 : 1) * (phaseTreads ? 1.2 : 1), p.dirY * 390 * classDistance * (game.upgrades.includes("phase_steps") ? 1.2 : 1) * (phaseTreads ? 1.2 : 1), 0.11, 9);
     if (hasEquipment(game, "iron-stompers")) game.enemies.filter((enemy) => dist(enemy, p) < 30).forEach((enemy) => { enemy.hp -= 12; enemy.flash = .16; burst(game, enemy.x, enemy.y, "#76c7dc", 8, 90); });
-    burst(game, p.x - p.dirX * 16, p.y - p.dirY * 16, "#76c7dc", 11, 95);
+    burst(game, p.x - p.dirX * 16, p.y - p.dirY * 16, p.classId === "mage" ? "#a78bfa" : p.classId === "archer" ? "#34d399" : "#76c7dc", 11, 95);
     game.shake = .08;
     beep(320, 0.05);
   }, [beep]);
@@ -2127,7 +2381,7 @@ export default function Home() {
       burst(game, chest.x, chest.y, "#f4d35e", 14, 90);
       const lootTable: ItemKind[] = ["tonic", "bomb", "fury"];
       const firstKind = lootTable[Math.floor(Math.random() * lootTable.length)];
-      const equipment = selectEquipmentDrop(Math.random, game.roomKinds[roomIndexFor(chest.x, chest.y)] === "elite");
+      const equipment = selectClassEquipmentDrop(p.classId, game.roomKinds[roomIndexFor(chest.x, chest.y)] === "elite");
       game.groundItems.push(
         { id: game.nextId++, kind: firstKind, x: chest.x - 18, y: chest.y + 18, phase: Math.random() * 6 },
       );
@@ -2146,14 +2400,15 @@ export default function Home() {
     }
   }, [beep, syncScreen]);
 
-  const pressAction = useCallback((action: "attack" | "dodge" | "interact" | "potion" | "bomb" | "fury") => {
+  const pressAction = useCallback((action: "attack" | "heavy" | "dodge" | "interact" | "potion" | "bomb" | "fury") => {
     if (action === "attack") attack();
+    if (action === "heavy") heavyAttack();
     if (action === "dodge") dodge();
     if (action === "interact") interact();
     if (action === "potion") usePotion();
     if (action === "bomb") useItem("bomb");
     if (action === "fury") useItem("fury");
-  }, [attack, dodge, interact, useItem, usePotion]);
+  }, [attack, dodge, heavyAttack, interact, useItem, usePotion]);
 
   useEffect(() => {
     setHighScore(Number(localStorage.getItem("signal-depths-high-score") || 0));
@@ -2169,6 +2424,8 @@ export default function Home() {
     const savedStarter = localStorage.getItem("signal-depths-starter-weapon") as WeaponId | null;
     const allowedStarters: WeaponId[] = ["cleaver", ...(snapshot.unlocks.includes("weapon_spear") ? ["spear" as WeaponId] : []), ...(snapshot.unlocks.includes("weapon_hammer") ? ["hammer" as WeaponId] : [])];
     if (savedStarter && allowedStarters.includes(savedStarter)) setStarterWeapon(savedStarter);
+    const savedClass = localStorage.getItem("signal-depths-player-class") as PlayerClassId | null;
+    if (savedClass && PLAYER_CLASS_IDS.includes(savedClass)) setSelectedClass(savedClass);
   }, []);
 
   useEffect(() => {
@@ -2190,8 +2447,15 @@ export default function Home() {
           return;
         }
         if (helpOpen) return;
-        if (key === " " || key === "j") attack();
-        if (key === "shift" || key === "k") dodge();
+        if (key === "shift") shiftUsedForHeavy.current = false;
+        if (key === " ") {
+          if (event.shiftKey || keysRef.current.has("shift")) {
+            shiftUsedForHeavy.current = true;
+            heavyAttack();
+          } else attack();
+        }
+        if (key === "j") attack();
+        if (key === "k") dodge();
         if (key === "f") {
           const game = gameRef.current;
           const gearNearby = game.groundEquipment.some((drop) => dist(drop, game.player) < 42);
@@ -2217,6 +2481,8 @@ export default function Home() {
         clearTimeout(interactHoldTimer.current);
         interactHoldTimer.current = null;
       }
+      if (key === "shift" && !shiftUsedForHeavy.current && !helpOpen && !armoryOpen) dodge();
+      if (key === "shift") shiftUsedForHeavy.current = false;
       keysRef.current.delete(key);
     };
     window.addEventListener("keydown", onDown, { passive: false });
@@ -2226,7 +2492,7 @@ export default function Home() {
       window.removeEventListener("keyup", onUp);
       if (interactHoldTimer.current) clearTimeout(interactHoldTimer.current);
     };
-  }, [armoryOpen, attack, closeHelp, dodge, helpOpen, interact, openHelp, syncScreen, useItem, usePotion]);
+  }, [armoryOpen, attack, closeHelp, dodge, heavyAttack, helpOpen, interact, openHelp, syncScreen, useItem, usePotion]);
 
   useEffect(() => {
     let frame = 0;
@@ -2274,10 +2540,11 @@ export default function Home() {
 
       <section className="game-shell" aria-label="Signal Depths game">
         <aside className="side-panel status-panel">
-          <p className="panel-label">SUBJECT 404</p>
-          <div className="portrait" aria-hidden="true"><span>404</span></div>
+          <p className="panel-label">SUBJECT 404 // {hud.className.toUpperCase()}</p>
+          <div className={`portrait ${hud.classId}`} aria-hidden="true"><span>{hud.className.toUpperCase()}</span></div>
           <Meter label="Vital" value={hud.hp} max={hud.maxHp} tone="health" />
           <Meter label="Drive" value={hud.stamina} max={100} tone="stamina" />
+          {hud.classId !== "knight" && <Meter label={hud.resourceName} value={hud.classResource} max={hud.classResourceMax} tone={hud.classId === "mage" ? "mana" : "quiver"} />}
           <div className="inventory-grid">
             <button onClick={() => useItem("tonic")} aria-label={`Use vital tonic, ${hud.potions} available`}><kbd>1</kbd><span>TONIC</span><b>×{hud.potions}</b></button>
             <button onClick={() => useItem("bomb")} aria-label={`Use room bomb, ${hud.bombs} available`}><kbd>2</kbd><span>BOMB</span><b>×{hud.bombs}</b></button>
@@ -2291,7 +2558,7 @@ export default function Home() {
             <b>?</b><span>CRAWLER FIELD GUIDE</span><kbd>H</kbd>
           </button>
           <div className="weapon-card">
-            <span>ACTIVE WEAPON</span>
+            <span>{hud.classId === "knight" ? "ACTIVE WEAPON" : "CLASS FOCUS"}</span>
             <strong>{hud.weaponName}</strong>
             <small>{hud.ammo > 0 ? `${hud.ammo} ROUNDS` : "UNLIMITED"}</small>
           </div>
@@ -2307,15 +2574,33 @@ export default function Home() {
         <div className="stage-wrap">
           <div className="broadcast-strip"><i />LIVE FEED 001<i /></div>
           <div className="canvas-frame">
-            <canvas ref={canvasRef} width={WIDTH} height={HEIGHT} tabIndex={0} aria-label="Top-down dungeon game. Use WASD to move, Space to attack, Shift to dodge, F to interact, and number keys 1, 2, and 3 to use items." />
+            <canvas ref={canvasRef} width={WIDTH} height={HEIGHT} tabIndex={0} aria-label="Top-down dungeon game. Use WASD to move, Space to attack, Shift plus Space for a heavy attack, Shift or K to dodge, F to interact, and number keys 1, 2, and 3 to use items." />
             {screen === "title" && (
               <div className="game-overlay title-overlay">
                 <div className="signal-icon" aria-hidden="true"><span /></div>
                 <p>THE FLOOR IS LISTENING</p>
                 <h2>SURVIVE THE FEED.<br />STEAL THE SIGNAL.</h2>
                 <p className="intro-copy">Twelve unknown rooms. Three signal pylons. One audience waiting for a spectacular escape.</p>
-                <div className="title-actions"><button onClick={startGame}>ENTER THE DEPTHS</button><button className="secondary" onClick={() => setArmoryOpen(true)}>OPEN ARMORY</button></div>
+                <div className="title-actions"><button onClick={openClassSelection}>ENTER THE DEPTHS</button><button className="secondary" onClick={() => setArmoryOpen(true)}>OPEN ARMORY</button></div>
                 {highScore > 0 && <small>LOCAL RECORD // {highScore.toLocaleString()}</small>}
+              </div>
+            )}
+            {screen === "class-select" && (
+              <div className="game-overlay class-select-overlay">
+                <p>CHOOSE YOUR SIGNAL</p>
+                <h2>WHO ENTERS THE DEPTHS?</h2>
+                <div className="class-select-grid">
+                  {PLAYER_CLASS_IDS.map((classId) => {
+                    const entry = PLAYER_CLASSES[classId];
+                    return <button key={classId} className={`class-choice ${selectedClass === classId ? "selected" : ""}`} onClick={() => setSelectedClass(classId)} style={{ "--class-color": entry.color } as CSSProperties}>
+                      <ClassArt classId={classId} />
+                      <span>{entry.role}</span><strong>{entry.name}</strong><em>{entry.tagline}</em>
+                      <small>{entry.strengths}</small>
+                    </button>;
+                  })}
+                </div>
+                <div className="class-detail"><b>{PLAYER_CLASSES[selectedClass].basicName}</b><span>{PLAYER_CLASSES[selectedClass].basicDescription}</span><b>{PLAYER_CLASSES[selectedClass].heavyName}</b><span>{PLAYER_CLASSES[selectedClass].heavyDescription}</span></div>
+                <div className="class-actions"><button className="secondary" onClick={() => { gameRef.current.screen = "title"; setScreen("title"); }}>BACK</button><button onClick={startGame}>DESCEND AS {PLAYER_CLASSES[selectedClass].name.toUpperCase()}</button></div>
               </div>
             )}
             {screen === "playing" && hud.nearbyEquipmentId && (() => {
@@ -2362,7 +2647,7 @@ export default function Home() {
                   <div><span>COMBAT READOUT</span><p><b>{mostUsedWeapon?.[1] ? getWeapon(mostUsedWeapon[0]).name : "No weapon used"}</b><em>{mostUsedWeapon?.[1] ?? 0} ATK</em></p><p><b>Hits per attack</b><em>{hitsPerAttack}</em></p>{screen === "lost" && <p><b>Signal lost in</b><em>{currentGame.deathRoomKind?.toUpperCase() ?? (currentGame.time <= 0 ? "TIMEOUT" : "UNKNOWN")}</em></p>}</div>
                 </div>
                 {currentGame.newUnlocks.length > 0 && <p className="unlock-line">UNLOCKED // {currentGame.newUnlocks.join(" + ")}</p>}
-                <button onClick={startGame}>RUN IT AGAIN</button>
+                <button onClick={openClassSelection}>CHOOSE NEXT CRAWLER</button>
               </div>
             )}
           </div>
@@ -2389,7 +2674,8 @@ export default function Home() {
             <span>CONTROL DECK</span>
             <p><kbd>WASD</kbd> MOVE</p>
             <p><kbd>SPACE</kbd> ATTACK</p>
-            <p><kbd>SHIFT</kbd> DODGE</p>
+            <p><kbd>SHIFT + SPACE</kbd> HEAVY</p>
+            <p><kbd>SHIFT / K</kbd> DODGE</p>
             <p><kbd>F</kbd> INTERACT</p>
             <p><kbd>1 / 2 / 3</kbd> ITEMS</p>
           </div>
@@ -2409,6 +2695,7 @@ export default function Home() {
           <button onClick={() => pressAction("fury")}>3 FURY</button>
           <button onClick={() => pressAction("interact")}>USE</button>
           <button onClick={() => pressAction("dodge")}>DODGE</button>
+          <button className="heavy-button" onClick={() => pressAction("heavy")}>HEAVY</button>
           <button className="attack-button" onClick={() => pressAction("attack")}>HIT</button>
         </div>
       </section>
@@ -2455,9 +2742,14 @@ function EquipmentArt({ item }: { item: EquipmentId }) {
   return <div className={`equipment-art ${definition.slot}`} style={{ "--gear-color": definition.color } as CSSProperties} aria-hidden="true"><i /><b /><em /></div>;
 }
 
+function ClassArt({ classId }: { classId: PlayerClassId }) {
+  return <div className={`class-art ${classId}`} aria-hidden="true"><i /><b /><em /><span /></div>;
+}
+
 function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection; onSectionChange: (section: HelpSection) => void; onClose: () => void }) {
   const sections: Array<{ id: HelpSection; label: string }> = [
     { id: "mission", label: "Mission" },
+    { id: "classes", label: "Classes" },
     { id: "controls", label: "Controls" },
     { id: "arsenal", label: "Arsenal" },
     { id: "enemies", label: "Enemies" },
@@ -2494,13 +2786,22 @@ function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection
             <div className="guide-section">
               <div className="control-guide-grid">
                 <GuideControl keys="W A S D" title="Move" copy="Travel, aim your next strike, and approach interactable objects." />
-                <GuideControl keys="SPACE / J" title="Attack" copy="Swing or fire your equipped weapon in the direction you face." />
-                <GuideControl keys="SHIFT / K" title="Dodge" copy="Spend Drive for a fast burst with a brief window of invulnerability." />
+                <GuideControl keys="SPACE / J" title="Basic Attack" copy="Use your class's normal strike, spell, or shot in the direction you face." />
+                <GuideControl keys="SHIFT + SPACE" title="Heavy Attack" copy="Commit class resources to a stronger attack with unique control or piercing behavior." />
+                <GuideControl keys="SHIFT / K" title="Dodge" copy="Tap Shift or press K to spend Drive for a brief window of invulnerability." />
                 <GuideControl keys="F / HOLD F" title="Interact" copy="Tap for objects and consumables. Hold near equipment to confirm a gear swap." />
                 <GuideControl keys="1 / E" title="Vital Tonic" copy="Restore 45 health. It cannot be used while already at full health." />
                 <GuideControl keys="2" title="Roombreaker Bomb" copy="Deal 55 damage to every unshielded enemy in your current room." />
                 <GuideControl keys="3" title="Fury Vial" copy="Temporarily boosts weapon damage and can be improved by upgrades." />
                 <GuideControl keys="ESC" title="Pause" copy="Freeze the broadcast. The field guide also pauses an active run." />
+              </div>
+            </div>
+          )}
+          {section === "classes" && (
+            <div className="guide-section">
+              <p className="guide-intro">Choose a crawler before each descent. Every class shares movement, dodging, items, and room objectives, but solves combat with a different range, resource, and heavy attack.</p>
+              <div className="class-guide-grid">
+                {PLAYER_CLASS_IDS.map((classId) => { const entry = PLAYER_CLASSES[classId]; return <article className="guide-card class-guide-card" key={classId} style={{ "--class-color": entry.color } as CSSProperties}><ClassArt classId={classId} /><div><span>{entry.role}</span><h3>{entry.name} // {entry.tagline}</h3><p>{entry.description}</p><strong>{entry.basicName}</strong><small>{entry.basicDescription}</small><strong>{entry.heavyName}</strong><small>{entry.heavyDescription}</small><em>STRONG: {entry.strengths}<br />WATCH: {entry.weakness}</em></div></article>; })}
               </div>
             </div>
           )}
