@@ -1905,7 +1905,7 @@ function runStatsFor(game: Game): RunStats {
     secretsFound: 0,
     lootValue: game.upgrades.length * 250 + game.discoveredEquipment.length * 180 + game.groundWeapons.length * 120,
     remainingSeconds: Math.round(game.time),
-    favoriteWeapon: getWeapon(game.player.weaponId).name,
+    favoriteWeapon: game.player.classId === "knight" ? getWeapon(game.player.weaponId).name : PLAYER_CLASSES[game.player.classId].basicName,
   };
 }
 
@@ -2560,7 +2560,7 @@ export default function Home() {
           <div className="weapon-card">
             <span>{hud.classId === "knight" ? "ACTIVE WEAPON" : "CLASS FOCUS"}</span>
             <strong>{hud.weaponName}</strong>
-            <small>{hud.ammo > 0 ? `${hud.ammo} ROUNDS` : "UNLIMITED"}</small>
+            <small>{hud.classId === "archer" ? `${hud.ammo} ARROWS${currentGame.player.reloadTime > 0 ? " // RELOADING" : ""}` : hud.classId === "mage" ? "ARCANE FOCUS // UNLIMITED BOLTS" : hud.ammo > 0 ? `${hud.ammo} ROUNDS` : "UNLIMITED"}</small>
           </div>
           <div className="gear-rack">
             <span>LOADOUT</span>
@@ -2644,7 +2644,7 @@ export default function Home() {
                 </div>
                 <div className="result-breakdown">
                   <div><span>DAMAGE REPORT</span>{damageBreakdown.length ? damageBreakdown.map(([source, amount]) => <p key={source}><b>{source}</b><em>{Math.round(amount)}</em></p>) : <p><b>Untouched</b><em>0</em></p>}</div>
-                  <div><span>COMBAT READOUT</span><p><b>{mostUsedWeapon?.[1] ? getWeapon(mostUsedWeapon[0]).name : "No weapon used"}</b><em>{mostUsedWeapon?.[1] ?? 0} ATK</em></p><p><b>Hits per attack</b><em>{hitsPerAttack}</em></p>{screen === "lost" && <p><b>Signal lost in</b><em>{currentGame.deathRoomKind?.toUpperCase() ?? (currentGame.time <= 0 ? "TIMEOUT" : "UNKNOWN")}</em></p>}</div>
+                  <div><span>COMBAT READOUT</span><p><b>{currentGame.player.classId === "knight" ? (mostUsedWeapon?.[1] ? getWeapon(mostUsedWeapon[0]).name : "No weapon used") : `${PLAYER_CLASSES[currentGame.player.classId].name} // ${PLAYER_CLASSES[currentGame.player.classId].basicName}`}</b><em>{currentGame.player.classId === "knight" ? `${mostUsedWeapon?.[1] ?? 0} ATK` : PLAYER_CLASSES[currentGame.player.classId].role.split(" // ")[0]}</em></p>{currentGame.player.classId === "knight" && <p><b>Hits per attack</b><em>{hitsPerAttack}</em></p>}{screen === "lost" && <p><b>Signal lost in</b><em>{currentGame.deathRoomKind?.toUpperCase() ?? (currentGame.time <= 0 ? "TIMEOUT" : "UNKNOWN")}</em></p>}</div>
                 </div>
                 {currentGame.newUnlocks.length > 0 && <p className="unlock-line">UNLOCKED // {currentGame.newUnlocks.join(" + ")}</p>}
                 <button onClick={openClassSelection}>CHOOSE NEXT CRAWLER</button>
