@@ -2747,6 +2747,7 @@ function ClassArt({ classId }: { classId: PlayerClassId }) {
 }
 
 function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection; onSectionChange: (section: HelpSection) => void; onClose: () => void }) {
+  const [guideClass, setGuideClass] = useState<PlayerClassId>("knight");
   const sections: Array<{ id: HelpSection; label: string }> = [
     { id: "mission", label: "Mission" },
     { id: "classes", label: "Classes" },
@@ -2800,8 +2801,14 @@ function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection
           {section === "classes" && (
             <div className="guide-section">
               <p className="guide-intro">Choose a crawler before each descent. Every class shares movement, dodging, items, and room objectives, but solves combat with a different range, resource, and heavy attack.</p>
+              <nav className="class-guide-nav" aria-label="Choose a class to inspect">
+                {PLAYER_CLASS_IDS.map((classId) => {
+                  const entry = PLAYER_CLASSES[classId];
+                  return <button key={classId} className={guideClass === classId ? "active" : ""} onClick={() => setGuideClass(classId)} style={{ "--class-color": entry.color } as CSSProperties}><span>{entry.role}</span><b>{entry.name}</b></button>;
+                })}
+              </nav>
               <div className="class-guide-grid">
-                {PLAYER_CLASS_IDS.map((classId) => { const entry = PLAYER_CLASSES[classId]; return <article className="guide-card class-guide-card" key={classId} style={{ "--class-color": entry.color } as CSSProperties}><ClassArt classId={classId} /><div><span>{entry.role}</span><h3>{entry.name} // {entry.tagline}</h3><p>{entry.description}</p><strong>{entry.basicName}</strong><small>{entry.basicDescription}</small><strong>{entry.heavyName}</strong><small>{entry.heavyDescription}</small><em>STRONG: {entry.strengths}<br />WATCH: {entry.weakness}</em></div></article>; })}
+                {(() => { const entry = PLAYER_CLASSES[guideClass]; return <article className="guide-card class-guide-card" key={guideClass} style={{ "--class-color": entry.color } as CSSProperties}><ClassArt classId={guideClass} /><div><span>{entry.role}</span><h3>{entry.name} // {entry.tagline}</h3><p>{entry.description}</p><div className="class-move-grid"><section><strong>BASIC // {entry.basicName}</strong><small>{entry.basicDescription}</small></section><section><strong>HEAVY // {entry.heavyName}</strong><small>{entry.heavyDescription}</small></section></div><em>STRONG: {entry.strengths}<br />WATCH: {entry.weakness}</em></div></article>; })()}
               </div>
             </div>
           )}

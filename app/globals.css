@@ -372,12 +372,23 @@ footer { margin-top: 14px; padding-top: 12px; border-top: 1px solid #28322f; dis
 .control-guide-card > kbd { color:var(--amber); border-color:#74631e; padding:10px 6px; }
 .control-guide-card h3, .guide-card h3, .room-guide-card h3 { margin:0 0 5px; font-family:var(--font-geist-sans),sans-serif; font-size:15px; }
 .control-guide-card p, .guide-card p, .room-guide-card p { margin:0; color:#94a69f; font-size:9px; line-height:1.45; }
-.class-guide-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
-.class-guide-card { grid-template-columns:1fr; align-items:start; min-height:350px; border-top:3px solid var(--class-color); }
-.class-guide-card .class-art { height:105px; --class-color:inherit; }
+.class-guide-nav { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); margin-bottom:12px; border:1px solid #34423d; background:#0d1311; }
+.class-guide-nav button { --class-color:#f4d35e; display:grid; gap:4px; padding:12px 15px; border:0; border-bottom:3px solid transparent; background:transparent; color:#7f9189; cursor:pointer; text-align:left; }
+.class-guide-nav button + button { border-left:1px solid #34423d; }
+.class-guide-nav button:hover,.class-guide-nav button.active { color:var(--cream); background:color-mix(in srgb,var(--class-color) 9%,transparent); border-bottom-color:var(--class-color); }
+.class-guide-nav span { color:var(--class-color); font-size:7px; letter-spacing:.13em; }
+.class-guide-nav b { font:800 15px/1 var(--font-geist-sans),sans-serif; }
+.class-guide-grid { display:block; max-width:820px; margin:0 auto; }
+.class-guide-card { grid-template-columns:minmax(190px,240px) 1fr; gap:24px; align-items:center; min-height:315px; padding:22px; border-top:3px solid var(--class-color); }
+.class-guide-card .class-art { height:220px; }
+.class-guide-card h3 { font-size:24px; }
+.class-guide-card p { max-width:580px; font-size:10px; }
 .class-guide-card strong { display:block; margin-top:10px; color:var(--class-color); font-size:9px; }
 .class-guide-card small { margin-top:4px; }
 .class-guide-card em { display:block; margin-top:12px; padding-top:9px; border-top:1px solid #34423d; color:#80938b; font:normal 7px/1.5 var(--font-geist-mono),monospace; }
+.class-move-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:14px; }
+.class-move-grid section { padding:10px; border:1px solid #34423d; background:#0c1210; }
+.class-move-grid strong { margin:0; }
 .arsenal-grid, .enemy-guide-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
 .guide-card { display:grid; grid-template-columns:110px 1fr; gap:15px; align-items:center; min-height:138px; padding:13px; border:1px solid #34423d; background:#101714; }
 .guide-card small { display:block; margin-top:9px; color:#6f8179; font-size:7px; line-height:1.45; }
@@ -531,7 +542,8 @@ footer { margin-top: 14px; padding-top: 12px; border-top: 1px solid #28322f; dis
   .guide-mission { grid-template-columns:1fr; }
   .guide-hero-art { display:none; }
   .control-guide-grid,.arsenal-grid,.enemy-guide-grid { grid-template-columns:1fr; }
-  .class-guide-grid { grid-template-columns:1fr; }
+  .class-guide-card { grid-template-columns:150px 1fr; gap:15px; min-height:0; padding:15px; }
+  .class-guide-card .class-art { height:155px; }
   .class-select-grid { grid-template-columns:repeat(3,minmax(118px,1fr)); overflow-x:auto; padding-bottom:5px; }
   .class-detail { grid-template-columns:auto 1fr; }
   .armory-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
@@ -557,6 +569,11 @@ footer { margin-top: 14px; padding-top: 12px; border-top: 1px solid #28322f; dis
   .control-guide-card { grid-template-columns:82px 1fr; }
   .room-guide-grid { grid-template-columns:1fr; }
   .help-footer > span { display:none; }
+  .class-guide-nav span { display:none; }
+  .class-guide-nav button { text-align:center; padding:11px 6px; }
+  .class-guide-card { grid-template-columns:1fr; }
+  .class-guide-card .class-art { height:130px; }
+  .class-move-grid { grid-template-columns:1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
