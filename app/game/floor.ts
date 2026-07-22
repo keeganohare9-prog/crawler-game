@@ -19,9 +19,10 @@ export type RoomKind =
   | "puzzle"
   | "safe"
   | "broadcast"
+  | "maze"
   | "boss";
 
-export type EnemyKind = "skitter" | "warden" | "spitter" | "boss";
+export type EnemyKind = "skitter" | "warden" | "spitter" | "healer" | "mimic" | "volatile" | "broadcaster" | "bulwark" | "burrower" | "ninja" | "boss";
 
 export type CardinalDirection = "north" | "east" | "south" | "west";
 
@@ -177,6 +178,7 @@ const ROOM_KIND_HINTS: Record<RoomKind, FogMetadata["hint"]> = {
   puzzle: "objective",
   safe: "rest",
   broadcast: "objective",
+  maze: "danger",
   boss: "danger",
 };
 
@@ -197,6 +199,7 @@ const STANDARD_KINDS: readonly RoomKind[] = [
   "elite",
   "puzzle",
   "broadcast",
+  "maze",
 ] as const;
 
 /** Stable 32-bit seed normalization for both numeric and human-readable seeds. */
@@ -257,6 +260,7 @@ function makeRecipe(kind: RoomKind, intensity: number): EnemySpawnRecipe | null 
         waves: [{ index: 0, startsAfterSeconds: 0.4, spawns: [
           { kind: "skitter", count: count + 1, formation: "edges", delaySeconds: 0 },
           { kind: "spitter", count: Math.max(1, count - 1), formation: "corners", delaySeconds: 0.7 },
+          ...(intensity > 1 ? [{ kind: "burrower" as const, count: 1, formation: "scattered" as const, delaySeconds: 1.2 }] : []),
         ] }],
         guaranteedDrop: "consumable",
       };
@@ -280,6 +284,7 @@ function makeRecipe(kind: RoomKind, intensity: number): EnemySpawnRecipe | null 
         id: `elite-${intensity}`,
         waves: [{ index: 0, startsAfterSeconds: 0.6, spawns: [
           { kind: "warden", count: 1, formation: "center", delaySeconds: 0 },
+          { kind: "bulwark", count: 1, formation: "corners", delaySeconds: 0.4 },
           { kind: "spitter", count: Math.min(2, count), formation: "corners", delaySeconds: 0.8 },
         ] }],
         guaranteedDrop: "rare",
@@ -288,7 +293,8 @@ function makeRecipe(kind: RoomKind, intensity: number): EnemySpawnRecipe | null 
       return {
         id: `broadcast-${intensity}`,
         waves: [{ index: 0, startsAfterSeconds: 0, spawns: [
-          { kind: pick(["skitter", "spitter", "warden"] as const, createRandom(intensity)), count, formation: "scattered", delaySeconds: 1 },
+          { kind: "broadcaster", count: 1, formation: "center", delaySeconds: 0 },
+          { kind: pick(["skitter", "spitter", "burrower"] as const, createRandom(intensity)), count, formation: "scattered", delaySeconds: 1 },
         ] }],
         guaranteedDrop: "weapon",
       };
@@ -332,6 +338,8 @@ function makeEncounter(kind: RoomKind, order: number): EncounterDefinition {
       return { ...base, title: "Off-Air Shelter", description: "Heal and choose a run upgrade.", locksDoorsOnStart: false, completion: { type: "none" }, rewardTier: "none" };
     case "broadcast":
       return { ...base, title: "Audience Dare", description: "Accept or decline a dangerous optional modifier.", locksDoorsOnStart: false, completion: { type: "accept-or-decline" }, rewardTier: "rare" };
+    case "maze":
+      return { ...base, title: "Shifting Maze", description: "Navigate the internal walls while hidden threats close in.", locksDoorsOnStart: false, completion: { type: "clear-enemies" }, rewardTier: "uncommon" };
     case "boss":
       return { ...base, title: "The Broadcast Warden", description: "End the floor's transmission.", locksDoorsOnStart: true, completion: { type: "defeat-boss" }, rewardTier: "boss" };
   }

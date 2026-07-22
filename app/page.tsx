@@ -1,12 +1,31 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { generateFloor, type RoomKind } from "./game/floor";
 import { WEAPONS, getWeapon, selectWeaponDrop, type WeaponId } from "./game/combat-content";
 import { EQUIPMENT, EQUIPMENT_IDS, selectEquipmentDrop, type EquipmentId, type EquipmentSlot } from "./game/equipment";
 import { AUDIENCE_DARES, PERMANENT_UNLOCKS, RUN_UPGRADES, bossPhaseForHealth, chooseAudienceDares, chooseSafeRoomUpgrades, newlyEarnedUnlocks, sponsorRewardsCrossed, summarizeRun, type RunStats, type RunUpgradeId } from "./game/progression";
 import { PLAYER_CLASSES, PLAYER_CLASS_IDS, type PlayerClassId } from "./game/classes";
-import { CLASS_ARSENAL, arsenalForClass, selectClassArsenalDrop, type ClassArsenalBehavior, type ClassArsenalId } from "./game/class-arsenal";
+import { CLASS_ARSENAL, arsenalForClass, selectClassArsenalDrop, type ClassArsenalId } from "./game/class-arsenal";
+import { hazardStateAt, hazardTilesForRoom, isRoomObstacleTile, pointIsOnHazard } from "./game/room-layout";
+import { MAZE_WRONG_TURNS, isMazeWallCell, mazeGoalPosition } from "./game/maze-layout";
+import {
+  DEFAULT_COMFORT_SETTINGS,
+  type ArmorySnapshot,
+  type BroadcastContractId,
+  type Chest,
+  type ComfortSettings,
+  type ControlMode,
+  type Enemy,
+  type EnemyKind,
+  type Game,
+  type HelpSection,
+  type Hud,
+  type ItemKind,
+  type Projectile,
+  type Screen,
+  type ScreenShakeLevel,
+} from "./game/runtime-types";
 
 const TILE = 32;
 const ROOM_COLS = 4;
@@ -19,154 +38,7 @@ const SAFE_X = 4.5 * TILE;
 const SAFE_Y = 4.5 * TILE;
 const EXIT_X = (MAP_W - 1.5) * TILE;
 const EXIT_Y = (MAP_H - 1.5) * TILE;
-
-type EnemyKind = "skitter" | "warden" | "spitter" | "healer" | "mimic" | "volatile" | "boss";
-type Enemy = {
-  id: number;
-  kind: EnemyKind;
-  x: number;
-  y: number;
-  hp: number;
-  maxHp: number;
-  speed: number;
-  damage: number;
-  cooldown: number;
-  flash: number;
-  windup: number;
-  recovery: number;
-  elite: boolean;
-  homeRoomIndex: number;
-};
-type ProjectileKind = "enemy" | "scrap" | "arc-bolt" | "arrow" | "power-arrow";
-type Projectile = { x: number; y: number; vx: number; vy: number; life: number; damage: number; owner?: "enemy" | "player"; pierce?: number; weaponId?: WeaponId; arsenalId?: ClassArsenalId; behavior?: ClassArsenalBehavior; kind?: ProjectileKind; splash?: number; splashDamage?: number; traveled?: number; slow?: number; bounces?: number };
-type Particle = { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; size: number };
-type Pylon = { x: number; y: number; active: boolean };
-type Chest = { x: number; y: number; open: boolean; openFx: number };
-type ItemKind = "tonic" | "bomb" | "fury";
-type GroundItem = { id: number; kind: ItemKind; x: number; y: number; phase: number };
-type GroundWeapon = { id: number; weaponId: WeaponId; x: number; y: number; phase: number };
-type GroundClassArsenal = { id: number; arsenalId: ClassArsenalId; x: number; y: number; phase: number };
-type GroundEquipment = { id: number; equipmentId: EquipmentId; x: number; y: number; phase: number };
-type Screen = "title" | "class-select" | "playing" | "paused" | "upgrade" | "won" | "lost";
-type HelpSection = "mission" | "classes" | "controls" | "arsenal" | "enemies" | "rooms";
-type Game = {
-  screen: Screen;
-  player: {
-    classId: PlayerClassId;
-    classArsenalId: ClassArsenalId;
-    x: number;
-    y: number;
-    hp: number;
-    maxHp: number;
-    stamina: number;
-    classResource: number;
-    reloadTime: number;
-    damage: number;
-    speed: number;
-    dirX: number;
-    dirY: number;
-    attackCd: number;
-    attackFx: number;
-    dodgeCd: number;
-    invuln: number;
-    potions: number;
-    bombs: number;
-    furyVials: number;
-    furyTime: number;
-    weaponId: WeaponId;
-    ammo: number;
-    moving: boolean;
-    stepTimer: number;
-    heavyFx: number;
-  };
-  enemies: Enemy[];
-  projectiles: Projectile[];
-  particles: Particle[];
-  pylons: Pylon[];
-  chests: Chest[];
-  groundItems: GroundItem[];
-  groundWeapons: GroundWeapon[];
-  groundClassArsenal: GroundClassArsenal[];
-  groundEquipment: GroundEquipment[];
-  explored: Set<string>;
-  time: number;
-  score: number;
-  hype: number;
-  kills: number;
-  bossDead: boolean;
-  safeUsed: boolean;
-  message: string;
-  messageTime: number;
-  elapsed: number;
-  nextId: number;
-  shake: number;
-  hitStop: number;
-  floorSeed: number;
-  roomKinds: RoomKind[];
-  roomStarted: boolean[];
-  roomCleared: boolean[];
-  roomTimers: number[];
-  currentRoomIndex: number;
-  upgrades: RunUpgradeId[];
-  upgradeChoices: RunUpgradeId[];
-  activeDareId: string;
-  dareProgress: number;
-  dareComplete: boolean;
-  damageTaken: number;
-  damageBySource: Record<string, number>;
-  deathRoomKind: RoomKind | null;
-  weaponAttacks: Record<WeaponId, number>;
-  weaponHits: Record<WeaponId, number>;
-  equipped: Record<EquipmentSlot, EquipmentId | null>;
-  discoveredEquipment: EquipmentId[];
-  discoveredEnemies: EnemyKind[];
-  maxHype: number;
-  roomsCleared: number;
-  lastBossPhase: string;
-  resultsSaved: boolean;
-  newUnlocks: string[];
-  sponsorHypeChecked: number;
-};
-
-type Hud = {
-  hp: number;
-  maxHp: number;
-  stamina: number;
-  classId: PlayerClassId;
-  className: string;
-  resourceName: string;
-  classResource: number;
-  classResourceMax: number;
-  time: number;
-  score: number;
-  hype: number;
-  rooms: number;
-  pylons: number;
-  potions: number;
-  bombs: number;
-  furyVials: number;
-  furyTime: number;
-  weaponName: string;
-  ammo: number;
-  nearbyEquipmentId: EquipmentId | null;
-  equipmentNames: string[];
-  roomKind: RoomKind;
-  roomsCleared: number;
-  dareName: string;
-  dareProgress: number;
-  dareTarget: number;
-  message: string;
-  objective: string;
-};
-
-type ArmorySnapshot = {
-  weapons: WeaponId[];
-  equipment: EquipmentId[];
-  enemies: EnemyKind[];
-  unlocks: string[];
-  runs: number;
-  kills: number;
-};
+const BOSS_VERSUS_DURATION = 3.4;
 
 const EMPTY_ARMORY: ArmorySnapshot = { weapons: ["cleaver"], equipment: [], enemies: [], unlocks: [], runs: 0, kills: 0 };
 
@@ -201,6 +73,27 @@ const initialHud: Hud = {
   objective: "Activate 3 signal pylons",
 };
 
+type BroadcastContract = {
+  id: BroadcastContractId;
+  name: string;
+  tagline: string;
+  risk: string;
+  reward: string;
+  enemySpeed: number;
+  enemyHealth: number;
+  playerHealth: number;
+  startingHype: number;
+  startingBombs: number;
+  startingFury: number;
+  scoreMultiplier: number;
+};
+
+const BROADCAST_CONTRACTS: Record<BroadcastContractId, BroadcastContract> = {
+  redline: { id: "redline", name: "Redline Feed", tagline: "The floor runs hot.", risk: "Enemies move 25% faster", reward: "+30% score · Start at 1.5× hype", enemySpeed: 1.25, enemyHealth: 1, playerHealth: 1, startingHype: 1.5, startingBombs: 0, startingFury: 0, scoreMultiplier: 1.3 },
+  "iron-signal": { id: "iron-signal", name: "Iron Signal", tagline: "Bigger targets. Bigger payout.", risk: "Enemies have 35% more health", reward: "+40% score · Start with a bomb", enemySpeed: 1, enemyHealth: 1.35, playerHealth: 1, startingHype: 1, startingBombs: 1, startingFury: 0, scoreMultiplier: 1.4 },
+  "one-take": { id: "one-take", name: "One-Take Wonder", tagline: "No safety net, maximum ratings.", risk: "Maximum health reduced by 30%", reward: "+50% score · Start at 2× hype with Fury", enemySpeed: 1, enemyHealth: 1, playerHealth: .7, startingHype: 2, startingBombs: 0, startingFury: 1, scoreMultiplier: 1.5 },
+};
+
 const enemyStats: Record<EnemyKind, Omit<Enemy, "id" | "kind" | "x" | "y" | "cooldown" | "flash" | "windup" | "recovery" | "elite" | "homeRoomIndex">> = {
   skitter: { hp: 28, maxHp: 28, speed: 68, damage: 9 },
   warden: { hp: 65, maxHp: 65, speed: 39, damage: 16 },
@@ -208,6 +101,10 @@ const enemyStats: Record<EnemyKind, Omit<Enemy, "id" | "kind" | "x" | "y" | "coo
   healer: { hp: 42, maxHp: 42, speed: 43, damage: 5 },
   mimic: { hp: 78, maxHp: 78, speed: 58, damage: 18 },
   volatile: { hp: 36, maxHp: 36, speed: 56, damage: 24 },
+  broadcaster: { hp: 52, maxHp: 52, speed: 34, damage: 6 },
+  bulwark: { hp: 74, maxHp: 74, speed: 38, damage: 10 },
+  burrower: { hp: 48, maxHp: 48, speed: 54, damage: 17 },
+  ninja: { hp: 24, maxHp: 24, speed: 86, damage: 11 },
   boss: { hp: 260, maxHp: 260, speed: 46, damage: 20 },
 };
 
@@ -218,6 +115,10 @@ const ENEMY_GUIDE: Array<{ kind: EnemyKind; name: string; role: string; tip: str
   { kind: "healer", name: "Halo Medic", role: "Enemy support", tip: "Orbiting repair nodes identify this floating medic. Eliminate it before it restores wounded allies." },
   { kind: "mimic", name: "Gilt-Maw Mimic", role: "Treasure ambusher", tip: "Look for eyes beneath the golden lid. Strike, disengage, and stay clear of its tongue and double row of teeth." },
   { kind: "volatile", name: "Fusewalker", role: "Walking explosion", tip: "Its fuse and flashing containment ring mean detonation. Lure it near other enemies, then escape." },
+  { kind: "broadcaster", name: "Husk Broadcaster", role: "Interruptible summoner", tip: "When its antenna blooms into a bright signal ring, hit it before the transmission completes or it will call in more Skitters." },
+  { kind: "bulwark", name: "Bulwark Drone", role: "Mobile shield projector", tip: "The cyan links mark protected enemies. Destroy the drone first or force its allies outside the shield radius." },
+  { kind: "burrower", name: "Scrap Burrower", role: "Subterranean ambusher", tip: "Follow the orange ground trail and leave the marked eruption point before it surfaces. Its scrap field remains dangerous." },
+  { kind: "ninja", name: "Signal Ninja", role: "Boss-linked assassin", tip: "The Ninja Master is vulnerable only while at least one of these fast assassins remains alive. Control the pack without clearing it too soon." },
   { kind: "boss", name: "Broadcast Warden", role: "Three-phase floor boss", tip: "Activate all three pylons first. Watch for phase changes and radial volleys." },
 ];
 
@@ -239,7 +140,8 @@ const ROOM_GUIDE: Array<{ kind: RoomKind; name: string; copy: string }> = [
   { kind: "elite", name: "Elite", copy: "A dangerous squad guarding stronger loot." },
   { kind: "puzzle", name: "Puzzle", copy: "Activate its signal objective or clear its defender." },
   { kind: "broadcast", name: "Broadcast", copy: "A ratings challenge that rewards speed and aggression." },
-  { kind: "boss", name: "Boss", copy: "Clearly marked with a skull. You may scout it early; the doors only seal once all pylons power the fight." },
+  { kind: "maze", name: "Maze", copy: "A winding signal labyrinth. Wrong turns trip hidden shadow ambushes, so read the route before committing." },
+  { kind: "boss", name: "Boss", copy: "Clearly marked with a skull. Its entrance stays sealed until every signal pylon is online; the gate displays your live pylon count." },
 ];
 
 function routeHint(kind: RoomKind) {
@@ -247,27 +149,36 @@ function routeHint(kind: RoomKind) {
   if (["treasure", "loot", "broadcast"].includes(kind)) return { icon: "$", label: "REWARD", color: "#f4d35e" };
   if (kind === "boss") return { icon: "☠", label: "BOSS", color: "#ff4d6d" };
   if (["elite", "survival"].includes(kind)) return { icon: "!", label: "DANGER", color: "#ff4d6d" };
+  if (kind === "maze") return { icon: "#", label: "MAZE", color: "#76c7dc" };
   if (kind === "puzzle") return { icon: "◆", label: "SIGNAL", color: "#76c7dc" };
   return { icon: "?", label: "UNKNOWN", color: "#9aaba4" };
 }
 
-function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerClassId = "knight"): Game {
+let activeMazeRooms = new Set<number>();
+
+function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerClassId = "knight", contractId: BroadcastContractId = "redline", floorNumber = 1): Game {
   const playerClass = PLAYER_CLASSES[classId];
+  const contract = BROADCAST_CONTRACTS[contractId];
   const floor = generateFloor(floorSeed, { roomCount: ROOM_COLS * ROOM_ROWS });
   const roomKinds = floor.rooms.map((room) => room.kind);
   if (["elite", "survival", "broadcast"].includes(roomKinds[1])) roomKinds[1] = "ambush";
+  if (floorNumber === 2) {
+    roomKinds[4] = "maze";
+    roomKinds[7] = "maze";
+  }
+  activeMazeRooms = new Set(roomKinds.map((kind, index) => kind === "maze" ? index : -1).filter((index) => index >= 0));
   let nextId = 1;
   const enemy = (kind: EnemyKind, tx: number, ty: number, roomIndex: number, elite = false): Enemy => {
     const stats = enemyStats[kind];
     const progression = kind === "boss" ? 1 : .82 + (roomIndex / Math.max(1, roomKinds.length - 1)) * .28;
-    const hp = Math.round(stats.hp * progression * (elite ? 1.08 : 1));
+    const hp = Math.round(stats.hp * progression * (elite ? 1.08 : 1) * contract.enemyHealth);
     return {
       id: nextId++, kind, x: tx * TILE + TILE / 2, y: ty * TILE + TILE / 2,
       cooldown: Math.random() * 1.2, flash: 0, windup: 0, recovery: 0, elite, homeRoomIndex: roomIndex,
       ...stats,
       hp, maxHp: hp,
       damage: Math.max(4, Math.round(stats.damage * progression)),
-      speed: stats.speed * (.92 + progression * .08),
+      speed: stats.speed * (.92 + progression * .08) * contract.enemySpeed,
     };
   };
 
@@ -281,13 +192,25 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     if (kind === "ambush") {
       enemies.push(enemy("skitter", tx + 3, ty + 3, index), enemy("skitter", tx + 6, ty + 5, index));
       if (index >= 3) enemies.push(enemy("spitter", tx + 5, ty + 2, index));
+      if (index >= 6) enemies.push(enemy("burrower", tx + 2.5, ty + 5.5, index));
     }
-    if (kind === "survival") enemies.push(enemy("skitter", tx + 2, ty + 5, index), enemy("skitter", tx + 6, ty + 2, index), enemy("warden", tx + 5, ty + 5, index));
-    if (kind === "elite") enemies.push(enemy("warden", tx + 4, ty + 4, index, true), enemy("healer", tx + 6, ty + 2, index));
-    if (kind === "broadcast") enemies.push(enemy("volatile", tx + 4, ty + 4, index), enemy("skitter", tx + 6, ty + 5, index));
-    if (kind === "puzzle") enemies.push(enemy("spitter", tx + 5, ty + 3, index));
+    if (kind === "survival") enemies.push(enemy("skitter", tx + 2, ty + 5, index), enemy("broadcaster", tx + 6, ty + 2, index), enemy("warden", tx + 5, ty + 5, index));
+    if (kind === "elite") enemies.push(enemy("warden", tx + 4, ty + 4, index, true), enemy("bulwark", tx + 6, ty + 2, index));
+    if (kind === "broadcast") enemies.push(enemy("volatile", tx + 4, ty + 4, index), enemy("broadcaster", tx + 6, ty + 5, index));
+    if (kind === "puzzle") enemies.push(enemy("spitter", tx + 5, ty + 3, index), enemy("burrower", tx + 2.5, ty + 5, index));
     if (kind === "treasure") enemies.push(enemy("mimic", tx + 5, ty + 5, index));
-    if (kind === "boss") enemies.push(enemy("boss", tx + 4, ty + 4, index, true));
+    // Maze enemies stay hidden until the crawler commits to a wrong branch.
+    if (kind === "boss") {
+      const floorBoss = enemy("boss", tx + 4, ty + 4, index, true);
+      floorBoss.variant = floorNumber === 2 ? "ninja" : "warden";
+      if (floorNumber === 2) {
+        floorBoss.hp = 390;
+        floorBoss.maxHp = 390;
+        floorBoss.speed = 62 * contract.enemySpeed;
+        floorBoss.damage = 18;
+      }
+      enemies.push(floorBoss);
+    }
     if (["treasure", "elite", "broadcast", "loot"].includes(kind)) chests.push({ x: (tx + 2.5) * TILE, y: (ty + 5.5) * TILE, open: false, openFx: 0 });
   });
   const pylonRoomIndices = [2, 5, 8];
@@ -300,13 +223,15 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
 
   return {
     screen,
+    testerMode: false,
+    floorNumber,
     player: {
       classId,
       classArsenalId: classId === "archer" ? "relay-recurve" : "signal-grimoire",
       x: 2.5 * TILE,
       y: 2.5 * TILE,
-      hp: playerClass.hp,
-      maxHp: playerClass.hp,
+      hp: Math.round(playerClass.hp * contract.playerHealth),
+      maxHp: Math.round(playerClass.hp * contract.playerHealth),
       stamina: 100,
       classResource: playerClass.resourceMax,
       reloadTime: 0,
@@ -319,18 +244,21 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
       dodgeCd: 0,
       invuln: 0,
       potions: 2,
-      bombs: 0,
-      furyVials: 0,
+      bombs: contract.startingBombs,
+      furyVials: contract.startingFury,
       furyTime: 0,
       weaponId: "cleaver",
       ammo: 0,
       moving: false,
       stepTimer: 0,
       heavyFx: 0,
+      aimDistance: 72,
     },
     enemies,
     projectiles: [],
     particles: [],
+    combatText: [],
+    burrowHazards: [],
     pylons,
     chests,
     groundItems: [],
@@ -340,9 +268,16 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     explored: new Set(["0"]),
     time: 720,
     score: 0,
-    hype: 1,
+    contractId,
+    scoreMultiplier: contract.scoreMultiplier,
+    hype: contract.startingHype,
     kills: 0,
     bossDead: false,
+    bossAwakenTime: 0,
+    bossEngaged: false,
+    bossIntroTime: 0,
+    bossPhaseFx: 0,
+    bossPhaseName: "",
     safeUsed: false,
     message: "SIGNAL ACQUIRED // SUBJECT 404 ENTERS THE FLOOR",
     messageTime: 4,
@@ -355,6 +290,10 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     roomStarted: roomKinds.map((_, index) => index === 0),
     roomCleared: roomKinds.map(() => false),
     roomTimers: roomKinds.map(() => 0),
+    mazeAmbushes: new Set(),
+    mazeSolved: new Set(),
+    roomClearFx: 0,
+    roomClearRoomIndex: -1,
     currentRoomIndex: 0,
     upgrades: [],
     upgradeChoices: [],
@@ -369,13 +308,51 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     equipped: { armor: null, boots: null, charm: null, mod: null },
     discoveredEquipment: [],
     discoveredEnemies: [],
-    maxHype: 1,
+    maxHype: contract.startingHype,
     roomsCleared: 0,
     lastBossPhase: "",
     resultsSaved: false,
     newUnlocks: [],
-    sponsorHypeChecked: 1,
+    sponsorHypeChecked: contract.startingHype,
   };
+}
+
+function makeNextFloor(game: Game) {
+  const next = makeGame("playing", Math.floor(Math.random() * 1_000_000_000), game.player.classId, game.contractId, game.floorNumber + 1);
+  next.testerMode = game.testerMode;
+  next.player = {
+    ...next.player,
+    classArsenalId: game.player.classArsenalId,
+    hp: game.player.maxHp,
+    maxHp: game.player.maxHp,
+    damage: game.player.damage,
+    potions: game.player.potions,
+    bombs: game.player.bombs,
+    furyVials: game.player.furyVials,
+    weaponId: game.player.weaponId,
+    ammo: game.player.ammo,
+  };
+  next.score = game.score;
+  next.hype = game.hype;
+  next.maxHype = game.maxHype;
+  next.kills = game.kills;
+  next.upgrades = [...game.upgrades];
+  next.equipped = { ...game.equipped };
+  next.discoveredEquipment = [...game.discoveredEquipment];
+  next.discoveredEnemies = [...game.discoveredEnemies];
+  next.damageTaken = game.damageTaken;
+  next.damageBySource = { ...game.damageBySource };
+  next.weaponAttacks = { ...game.weaponAttacks };
+  next.weaponHits = { ...game.weaponHits };
+  next.elapsed = game.elapsed;
+  next.sponsorHypeChecked = game.sponsorHypeChecked;
+  next.message = "FLOOR 02 // SHADOW NETWORK ACQUIRED";
+  if (next.testerMode) applyTesterLoadout(next);
+  return next;
+}
+
+function mazeRoomIndexForTile(tx: number, ty: number) {
+  return Math.floor(ty / 8) * ROOM_COLS + Math.floor(tx / 8);
 }
 
 function isWallTile(tx: number, ty: number) {
@@ -384,7 +361,16 @@ function isWallTile(tx: number, ty: number) {
   const horizontalDoorway = [2, 3, 4, 5, 6].includes(((tx % 8) + 8) % 8);
   if (tx % 8 === 0 && !verticalDoorway) return true;
   if (ty % 8 === 0 && !horizontalDoorway) return true;
-  return false;
+  const roomCol = Math.floor(tx / 8);
+  const roomRow = Math.floor(ty / 8);
+  const roomIndex = roomRow * ROOM_COLS + roomCol;
+  if (activeMazeRooms.has(roomIndex)) {
+    const localX = ((tx % 8) + 8) % 8;
+    const localY = ((ty % 8) + 8) % 8;
+    if (isMazeWallCell(localX, localY)) return true;
+    return false;
+  }
+  return isRoomObstacleTile(tx, ty, ROOM_COLS, ROOM_ROWS);
 }
 
 function canMove(x: number, y: number, radius = 10) {
@@ -401,6 +387,29 @@ function dist(a: { x: number; y: number }, b: { x: number; y: number }) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+function applyKeyboardAimAssist(game: Game) {
+  const player = game.player;
+  const target = game.enemies
+    .filter((enemy) => enemy.hp > 0 && enemyIsTargetable(enemy) && roomIndexFor(enemy.x, enemy.y) === roomIndexFor(player.x, player.y) && (enemy.kind !== "boss" || game.bossEngaged))
+    .map((enemy) => {
+      const dx = enemy.x - player.x;
+      const dy = enemy.y - player.y;
+      const distance = Math.hypot(dx, dy);
+      const alignment = (dx * player.dirX + dy * player.dirY) / Math.max(1, distance);
+      return { enemy, dx, dy, distance, alignment };
+    })
+    .filter((entry) => entry.distance < 180 && entry.alignment > Math.cos(.42))
+    .sort((a, b) => (b.alignment - a.alignment) || (a.distance - b.distance))[0];
+  if (!target) return;
+  const targetX = target.dx / Math.max(1, target.distance);
+  const targetY = target.dy / Math.max(1, target.distance);
+  const assistedX = player.dirX * .65 + targetX * .35;
+  const assistedY = player.dirY * .65 + targetY * .35;
+  const length = Math.max(1, Math.hypot(assistedX, assistedY));
+  player.dirX = assistedX / length;
+  player.dirY = assistedY / length;
+}
+
 function roomFor(x: number, y: number) {
   return {
     col: Math.max(0, Math.min(ROOM_COLS - 1, Math.floor(x / (8 * TILE)))),
@@ -413,22 +422,93 @@ function roomIndexFor(x: number, y: number) {
   return room.row * ROOM_COLS + room.col;
 }
 
-function chaseWaypoint(from: { x: number; y: number }, target: { x: number; y: number }) {
+function doorwayLane(id: number) {
+  // Three narrow lanes keep a crowd from converging on one exact point while
+  // retaining enough clearance for the largest non-boss enemy at the frame.
+  return (id % 3 - 1) * 18;
+}
+
+function chaseWaypoint(from: { x: number; y: number; id?: number }, target: { x: number; y: number }) {
   const sourceRoom = roomFor(from.x, from.y);
   const targetRoom = roomFor(target.x, target.y);
   if (sourceRoom.col === targetRoom.col && sourceRoom.row === targetRoom.row) return target;
+
+  // An entity's collision radius is wider than a tile seam.  Heading straight
+  // for a point on the far side of a door can therefore catch a corner of the
+  // frame before it is centered in the opening.  Always align with the middle
+  // of the next doorway first, then cross its threshold.
   if (sourceRoom.col !== targetRoom.col) {
     const direction = targetRoom.col > sourceRoom.col ? 1 : -1;
+    const doorwayY = (sourceRoom.row * 8 + 4.5) * TILE + doorwayLane(from.id ?? 0);
+    if (Math.abs(from.y - doorwayY) > 2) return { x: from.x, y: doorwayY };
     return {
       x: (sourceRoom.col + (direction > 0 ? 1 : 0)) * 8 * TILE + direction * 18,
-      y: (sourceRoom.row * 8 + 4.5) * TILE,
+      y: doorwayY,
     };
   }
   const direction = targetRoom.row > sourceRoom.row ? 1 : -1;
+  const doorwayX = (sourceRoom.col * 8 + 4.5) * TILE + doorwayLane(from.id ?? 0);
+  if (Math.abs(from.x - doorwayX) > 2) return { x: doorwayX, y: from.y };
   return {
-    x: (sourceRoom.col * 8 + 4.5) * TILE,
+    x: doorwayX,
     y: (sourceRoom.row + (direction > 0 ? 1 : 0)) * 8 * TILE + direction * 18,
   };
+}
+
+function doorwayQueueBlocked(enemy: Enemy, target: { x: number; y: number }, enemies: Enemy[]) {
+  const sourceRoom = roomFor(enemy.x, enemy.y);
+  const targetRoom = roomFor(target.x, target.y);
+  if (sourceRoom.col === targetRoom.col && sourceRoom.row === targetRoom.row) return false;
+
+  const horizontal = sourceRoom.col !== targetRoom.col;
+  const direction = horizontal
+    ? (targetRoom.col > sourceRoom.col ? 1 : -1)
+    : (targetRoom.row > sourceRoom.row ? 1 : -1);
+  const boundary = horizontal
+    ? (sourceRoom.col + (direction > 0 ? 1 : 0)) * 8 * TILE
+    : (sourceRoom.row + (direction > 0 ? 1 : 0)) * 8 * TILE;
+  const progress = horizontal ? (boundary - enemy.x) * direction : (boundary - enemy.y) * direction;
+  if (progress < -22 || progress > 76) return false;
+
+  const lane = horizontal
+    ? (sourceRoom.row * 8 + 4.5) * TILE + doorwayLane(enemy.id)
+    : (sourceRoom.col * 8 + 4.5) * TILE + doorwayLane(enemy.id);
+  return enemies.some((other) => {
+    if (other.id === enemy.id || other.hp <= 0 || doorwayLane(other.id) !== doorwayLane(enemy.id)) return false;
+    const otherRoom = roomFor(other.x, other.y);
+    if (otherRoom.col !== sourceRoom.col || otherRoom.row !== sourceRoom.row) return false;
+    const lateralGap = horizontal ? Math.abs(other.y - lane) : Math.abs(other.x - lane);
+    const otherProgress = horizontal ? (boundary - other.x) * direction : (boundary - other.y) * direction;
+    return lateralGap < 17 && otherProgress < progress && progress - otherProgress < 34;
+  });
+}
+
+function doorwayClearanceTarget(enemy: Enemy) {
+  const room = roomFor(enemy.x, enemy.y);
+  const roomLeft = room.col * 8 * TILE;
+  const roomTop = room.row * 8 * TILE;
+  const localX = enemy.x - roomLeft;
+  const localY = enemy.y - roomTop;
+  const doorCenter = 4.5 * TILE;
+  const inVerticalDoorBand = Math.abs(localY - doorCenter) < 72;
+  const inHorizontalDoorBand = Math.abs(localX - doorCenter) < 72;
+  const clearance = 56;
+
+  if (room.col > 0 && localX < 42 && inVerticalDoorBand) return { x: roomLeft + clearance, y: enemy.y };
+  if (room.col < ROOM_COLS - 1 && localX > 8 * TILE - 42 && inVerticalDoorBand) return { x: roomLeft + 8 * TILE - clearance, y: enemy.y };
+  if (room.row > 0 && localY < 42 && inHorizontalDoorBand) return { x: enemy.x, y: roomTop + clearance };
+  if (room.row < ROOM_ROWS - 1 && localY > 8 * TILE - 42 && inHorizontalDoorBand) return { x: enemy.x, y: roomTop + 8 * TILE - clearance };
+  return null;
+}
+
+function enemyApproachTarget(enemy: Enemy, player: Game["player"]) {
+  if (["boss", "healer", "spitter", "volatile", "broadcaster", "bulwark"].includes(enemy.kind)) return player;
+  if (dist(enemy, player) > 112) return player;
+  const reach = enemy.kind === "mimic" ? 28 : enemy.kind === "warden" ? 28 : 24;
+  const angle = ((enemy.id * 137.5) % 360) * Math.PI / 180;
+  const radius = reach + 5;
+  const target = { x: player.x + Math.cos(angle) * radius, y: player.y + Math.sin(angle) * radius };
+  return canMove(target.x, target.y, 11) ? target : player;
 }
 
 function encounterLocks(kind: RoomKind) {
@@ -436,8 +516,12 @@ function encounterLocks(kind: RoomKind) {
 }
 
 function isRoomLocked(game: Game, roomIndex: number) {
-  const bossPowered = game.pylons.filter((pylon) => pylon.active).length === 3;
-  return Boolean(bossPowered && game.roomStarted[roomIndex] && !game.roomCleared[roomIndex] && encounterLocks(game.roomKinds[roomIndex]));
+  if (game.roomKinds[roomIndex] === "maze") return game.roomStarted[roomIndex] && !game.mazeSolved.has(roomIndex);
+  return Boolean(bossGateOpen(game) && game.roomStarted[roomIndex] && !game.roomCleared[roomIndex] && encounterLocks(game.roomKinds[roomIndex]));
+}
+
+function bossGateOpen(game: Game) {
+  return game.pylons.every((pylon) => pylon.active) && game.bossAwakenTime <= 0;
 }
 
 function burst(game: Game, x: number, y: number, color: string, count: number, speed = 80) {
@@ -458,6 +542,23 @@ function burst(game: Game, x: number, y: number, color: string, count: number, s
   }
 }
 
+function showDamage(game: Game, enemy: Enemy, amount: number, heavy = false, color = "#fff3b0") {
+  const life = heavy ? .72 : .58;
+  game.combatText.push({
+    x: enemy.x + (Math.random() - .5) * 8,
+    y: enemy.y - (enemy.kind === "boss" ? 36 : 25),
+    text: `${heavy ? "!" : ""}${Math.max(1, Math.round(amount))}`,
+    life,
+    maxLife: life,
+    color,
+    scale: heavy ? 1.25 : 1,
+  });
+}
+
+function colorForProjectile(shot: Projectile) {
+  return shot.arsenalId ? CLASS_ARSENAL[shot.arsenalId].color : shot.kind === "arc-bolt" ? "#a78bfa" : shot.kind === "arrow" || shot.kind === "power-arrow" ? "#34d399" : "#f4d35e";
+}
+
 function moveEntity(entity: { x: number; y: number }, vx: number, vy: number, dt: number, radius = 10) {
   const nx = entity.x + vx * dt;
   if (canMove(nx, entity.y, radius)) entity.x = nx;
@@ -465,7 +566,50 @@ function moveEntity(entity: { x: number; y: number }, vx: number, vy: number, dt
   if (canMove(entity.x, ny, radius)) entity.y = ny;
 }
 
+function recoverEmbeddedEntity(entity: { x: number; y: number }, radius = 10) {
+  if (canMove(entity.x, entity.y, radius)) return;
+
+  // Knockback from an older frame/save can leave an entity overlapping a wall.
+  // Find the nearest valid point so regular steering can resume.
+  for (let distance = 2; distance <= TILE * 2; distance += 2) {
+    for (let step = 0; step < 16; step++) {
+      const angle = (step / 16) * Math.PI * 2;
+      const x = entity.x + Math.cos(angle) * distance;
+      const y = entity.y + Math.sin(angle) * distance;
+      if (canMove(x, y, radius)) {
+        entity.x = x;
+        entity.y = y;
+        return;
+      }
+    }
+  }
+}
+
+function displaceEntity(entity: { x: number; y: number }, dx: number, dy: number, radius = 10) {
+  recoverEmbeddedEntity(entity, radius);
+  const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 4));
+  for (let step = 0; step < steps; step++) {
+    moveEntity(entity, dx / steps, dy / steps, 1, radius);
+  }
+}
+
+function movePlayer(game: Game, vx: number, vy: number, dt: number, radius = 10) {
+  const player = game.player;
+  const canEnter = (x: number, y: number) => {
+    const currentRoom = roomIndexFor(player.x, player.y);
+    const nextRoom = roomIndexFor(x, y);
+    const trappedInMaze = game.roomKinds[currentRoom] === "maze" && !game.mazeSolved.has(currentRoom) && nextRoom !== currentRoom;
+    return canMove(x, y, radius) && !trappedInMaze && (game.roomKinds[nextRoom] !== "boss" || bossGateOpen(game));
+  };
+
+  const nx = player.x + vx * dt;
+  if (canEnter(nx, player.y)) player.x = nx;
+  const ny = player.y + vy * dt;
+  if (canEnter(player.x, ny)) player.y = ny;
+}
+
 function separateEnemyFromPlayer(game: Game, enemy: Enemy) {
+  if (!enemyIsTargetable(enemy)) return;
   const player = game.player;
   const minimumDistance = enemy.kind === "boss" ? 42 : enemy.kind === "warden" || enemy.kind === "mimic" ? 32 : 28;
   const dx = enemy.x - player.x;
@@ -503,6 +647,30 @@ function separateEnemyFromPlayer(game: Game, enemy: Enemy) {
   }
 }
 
+function separateEnemies(game: Game) {
+  const living = game.enemies.filter((enemy) => enemy.hp > 0 && enemyIsTargetable(enemy));
+  for (let i = 0; i < living.length; i++) {
+    for (let j = i + 1; j < living.length; j++) {
+      const first = living[i];
+      const second = living[j];
+      const firstRadius = first.kind === "boss" ? 17 : 11;
+      const secondRadius = second.kind === "boss" ? 17 : 11;
+      const minimumDistance = firstRadius + secondRadius + 4;
+      const dx = second.x - first.x;
+      const dy = second.y - first.y;
+      const distance = Math.hypot(dx, dy);
+      if (distance >= minimumDistance) continue;
+
+      const fallbackAngle = ((first.id * 53 + second.id * 97) % 360) * Math.PI / 180;
+      const nx = distance > .01 ? dx / distance : Math.cos(fallbackAngle);
+      const ny = distance > .01 ? dy / distance : Math.sin(fallbackAngle);
+      const correction = (minimumDistance - distance) / 2;
+      displaceEntity(first, -nx * correction, -ny * correction, firstRadius);
+      displaceEntity(second, nx * correction, ny * correction, secondRadius);
+    }
+  }
+}
+
 function setMessage(game: Game, message: string) {
   game.message = message;
   game.messageTime = 3.2;
@@ -510,6 +678,129 @@ function setMessage(game: Game, message: string) {
 
 function hasEquipment(game: Game, id: EquipmentId) {
   return Object.values(game.equipped).includes(id);
+}
+
+function enemyIsTargetable(enemy: Enemy) {
+  return enemy.burrowPhase !== "underground" && enemy.burrowPhase !== "erupting";
+}
+
+function shieldingBulwark(game: Game, target: Enemy) {
+  if (target.kind === "bulwark") return null;
+  return game.enemies.find((enemy) =>
+    enemy.kind === "bulwark" && enemy.hp > 0 && (enemy.shieldTime ?? 0) > 0 &&
+    roomIndexFor(enemy.x, enemy.y) === roomIndexFor(target.x, target.y) && dist(enemy, target) < 82
+  ) ?? null;
+}
+
+function damageEnemy(game: Game, target: Enemy, rawDamage: number) {
+  if (!enemyIsTargetable(target)) return 0;
+  if (target.kind === "boss" && target.variant === "ninja") {
+    const livingNinjas = game.enemies.some((enemy) => enemy.kind === "ninja" && enemy.hp > 0 && enemy.homeRoomIndex === target.homeRoomIndex);
+    if ((target.restTime ?? 0) > 0 || !livingNinjas) {
+      game.combatText.push({ x: target.x, y: target.y - 43, text: (target.restTime ?? 0) > 0 ? "REST MODE" : "SUMMONING", life: .44, maxLife: .44, color: "#dcd3ff", scale: .8 });
+      burst(game, target.x, target.y, "#a78bfa", 5, 65);
+      return 0;
+    }
+  }
+  const shield = shieldingBulwark(game, target);
+  const damage = rawDamage * (shield ? .55 : 1);
+  target.hp -= damage;
+  if (shield) {
+    burst(game, target.x, target.y, "#76c7dc", 5, 65);
+    game.combatText.push({ x: target.x, y: target.y - 31, text: "SHIELDED", life: .42, maxLife: .42, color: "#76c7dc", scale: .75 });
+  }
+  if (target.kind === "broadcaster" && target.windup > 0 && target.castStartHp !== undefined) {
+    const channelDamage = target.castStartHp - target.hp;
+    if (channelDamage >= Math.max(12, target.maxHp * .18)) {
+      target.windup = 0;
+      target.castStartHp = undefined;
+      target.cooldown = 2.8;
+      target.recovery = .6;
+      burst(game, target.x, target.y, "#ffffff", 13, 105);
+      game.combatText.push({ x: target.x, y: target.y - 34, text: "SIGNAL CUT", life: .72, maxLife: .72, color: "#fff3b0", scale: .9 });
+    }
+  }
+  return damage;
+}
+
+function spawnRuntimeEnemy(game: Game, kind: EnemyKind, x: number, y: number, roomIndex: number, summonerId?: number) {
+  const stats = enemyStats[kind];
+  const contract = BROADCAST_CONTRACTS[game.contractId];
+  const progression = .82 + (roomIndex / Math.max(1, game.roomKinds.length - 1)) * .28;
+  const hp = Math.round(stats.hp * progression * contract.enemyHealth);
+  const spawned: Enemy = {
+    id: game.nextId++, kind, x, y, hp, maxHp: hp,
+    speed: stats.speed * (.92 + progression * .08) * contract.enemySpeed,
+    damage: Math.max(4, Math.round(stats.damage * progression)),
+    cooldown: .45, flash: .18, windup: 0, recovery: .3, elite: false, homeRoomIndex: roomIndex, summonerId,
+  };
+  game.enemies.push(spawned);
+  return spawned;
+}
+
+function summonBroadcasterHusks(game: Game, broadcaster: Enemy) {
+  const offsets = broadcaster.id % 2 ? [[-30, 22], [30, -22]] : [[-30, -22], [30, 22]];
+  offsets.forEach(([dx, dy]) => {
+    const x = broadcaster.x + dx;
+    const y = broadcaster.y + dy;
+    if (canMove(x, y, 11)) {
+      spawnRuntimeEnemy(game, "skitter", x, y, broadcaster.homeRoomIndex, broadcaster.id);
+      burst(game, x, y, "#ff4d9a", 10, 90);
+    }
+  });
+}
+
+function summonSignalNinjas(game: Game, boss: Enemy, count = 4) {
+  for (let index = 0; index < count; index++) {
+    const angle = (index / count) * Math.PI * 2 + boss.id * .31;
+    const x = boss.x + Math.cos(angle) * 70;
+    const y = boss.y + Math.sin(angle) * 70;
+    if (canMove(x, y, 11)) {
+      const ninja = spawnRuntimeEnemy(game, "ninja", x, y, boss.homeRoomIndex, boss.id);
+      ninja.scale = .64;
+      ninja.hp = Math.max(1, Math.round(ninja.hp * .72));
+      ninja.maxHp = ninja.hp;
+      burst(game, x, y, "#a78bfa", 12, 105);
+    }
+  }
+}
+
+function triggerMazeWrongTurn(game: Game, roomIndex: number) {
+  const roomCol = roomIndex % ROOM_COLS;
+  const roomRow = Math.floor(roomIndex / ROOM_COLS);
+  MAZE_WRONG_TURNS.forEach((turn, turnIndex) => {
+    const key = `${roomIndex}:${turnIndex}`;
+    const x = (roomCol * 8 + turn.x + .5) * TILE;
+    const y = (roomRow * 8 + turn.y + .5) * TILE;
+    if (game.mazeAmbushes.has(key) || Math.hypot(game.player.x - x, game.player.y - y) > 18) return;
+    game.mazeAmbushes.add(key);
+    const spawnOffsets = [[-38, 0], [38, 0], [0, -38], [0, 38], [-32, -32], [32, 32]];
+    let spawned = 0;
+    for (const [dx, dy] of spawnOffsets) {
+      if (spawned >= 2) break;
+      if (!canMove(x + dx, y + dy, 11)) continue;
+      spawnRuntimeEnemy(game, "ninja", x + dx, y + dy, roomIndex);
+      burst(game, x + dx, y + dy, "#a78bfa", 12, 95);
+      spawned++;
+    }
+    game.shake = Math.max(game.shake, .22);
+    setMessage(game, "WRONG PATH // SHADOW AMBUSH REVEALED");
+  });
+}
+
+function updateMazeRoom(game: Game, roomIndex: number) {
+  triggerMazeWrongTurn(game, roomIndex);
+  if (game.mazeSolved.has(roomIndex)) return;
+  const goal = mazeGoalPosition(roomIndex, ROOM_COLS, TILE);
+  if (dist(game.player, goal) > 20) return;
+  game.mazeSolved.add(roomIndex);
+  game.roomCleared[roomIndex] = true;
+  game.roomsCleared++;
+  game.score += 450;
+  game.roomClearFx = 1.2;
+  game.roomClearRoomIndex = roomIndex;
+  burst(game, goal.x, goal.y, "#76c7dc", 24, 120);
+  setMessage(game, "MAZE SOLVED // ALL ROUTES RELEASED");
 }
 
 function selectClassEquipmentDrop(classId: PlayerClassId, rareBoost = false) {
@@ -553,6 +844,7 @@ function equipItem(game: Game, id: EquipmentId) {
 }
 
 function hurtPlayer(game: Game, amount: number, source: string) {
+  if (game.testerMode) return;
   if (source === "Void projectile" && hasEquipment(game, "shockweave-vest")) amount *= .75;
   amount = Math.round(amount);
   game.player.hp -= amount;
@@ -560,10 +852,26 @@ function hurtPlayer(game: Game, amount: number, source: string) {
   game.damageBySource[source] = (game.damageBySource[source] ?? 0) + amount;
 }
 
+function applyTesterLoadout(game: Game) {
+  const player = game.player;
+  player.hp = player.maxHp;
+  player.stamina = 100;
+  player.classResource = PLAYER_CLASSES[player.classId].resourceMax;
+  player.reloadTime = 0;
+  player.attackCd = 0;
+  player.dodgeCd = 0;
+  player.potions = 99;
+  player.bombs = 99;
+  player.furyVials = 99;
+  if (getWeapon(player.weaponId).ammo !== null) player.ammo = 99;
+  game.time = Math.max(game.time, 720);
+}
+
 function creditEnemyDeaths(game: Game, dead: Enemy[]) {
   dead.forEach((enemy) => {
     burst(game, enemy.x, enemy.y, enemy.kind === "boss" ? "#ff4d6d" : "#dce7e4", enemy.kind === "boss" ? 34 : 20, 175);
     burst(game, enemy.x, enemy.y, "#f4d35e", enemy.kind === "boss" ? 18 : 7, 90);
+    game.combatText.push({ x: enemy.x, y: enemy.y - (enemy.kind === "boss" ? 44 : 30), text: enemy.kind === "boss" ? enemy.variant === "ninja" ? "NINJA MASTER DOWN" : "WARDEN DOWN" : "K.O.", life: .85, maxLife: .85, color: "#ff8fab", scale: enemy.kind === "boss" ? 1.35 : 1.15 });
     game.kills++;
     if (game.upgrades.includes("blood_broadcast") && game.player.hp / game.player.maxHp < .35) game.player.hp = Math.min(game.player.maxHp, game.player.hp + 2);
     if (hasEquipment(game, "blood-token")) game.player.hp = Math.min(game.player.maxHp, game.player.hp + 3);
@@ -572,7 +880,7 @@ function creditEnemyDeaths(game: Game, dead: Enemy[]) {
     game.score += Math.round((enemy.kind === "boss" ? 1600 : 140) * game.hype);
     if (enemy.kind === "boss") {
       game.bossDead = true;
-      setMessage(game, "WARDEN DOWN // EXIT CHANNEL UNLOCKED");
+      setMessage(game, enemy.variant === "ninja" ? "NINJA MASTER DOWN // EXIT CHANNEL UNLOCKED" : "WARDEN DOWN // EXIT CHANNEL UNLOCKED");
     }
   });
 }
@@ -588,6 +896,8 @@ function drawPixelText(ctx: CanvasRenderingContext2D, text: string, x: number, y
   ctx.restore();
 }
 
+// Kept as a compact fallback/reference renderer while V2 drives the live feed.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function renderGame(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = "#08090a";
@@ -651,6 +961,17 @@ function renderGame(ctx: CanvasRenderingContext2D, game: Game) {
       ctx.stroke();
     }
   });
+
+  const fallbackMazeRoom = roomIndexFor(game.player.x, game.player.y);
+  if (game.roomKinds[fallbackMazeRoom] === "maze" && !game.mazeSolved.has(fallbackMazeRoom)) {
+    const goal = mazeGoalPosition(fallbackMazeRoom, ROOM_COLS, TILE);
+    const pulse = 7 + Math.sin(game.elapsed * 6) * 2;
+    ctx.save(); ctx.translate(goal.x, goal.y); ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = "rgba(118,199,220,.24)"; ctx.fillRect(-pulse, -pulse, pulse * 2, pulse * 2);
+    ctx.fillStyle = "#76c7dc"; ctx.fillRect(-5, -5, 10, 10);
+    ctx.fillStyle = "#d9f7ff"; ctx.fillRect(-2, -2, 4, 4); ctx.restore();
+    drawPixelText(ctx, "ROUTE CORE", goal.x, goal.y - 16, "#76c7dc", "center");
+  }
 
   game.chests.forEach((chest) => {
     ctx.fillStyle = chest.open ? "#4a3420" : "#b7791f";
@@ -795,9 +1116,9 @@ function renderGame(ctx: CanvasRenderingContext2D, game: Game) {
     ctx.stroke();
   }
 
-  const activePylons = game.pylons.filter((pylon) => pylon.active).length;
+  const activePylonCount = game.pylons.filter((pylon) => pylon.active).length;
   const boss = game.enemies.find((enemy) => enemy.kind === "boss");
-  if (boss && activePylons < 3) {
+  if (boss && activePylonCount < game.pylons.length) {
     ctx.strokeStyle = "rgba(255,77,109,.72)";
     ctx.lineWidth = 4;
     ctx.beginPath();
@@ -819,14 +1140,16 @@ function renderGame(ctx: CanvasRenderingContext2D, game: Game) {
   }
 }
 
-function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: number, player: Game["player"]) {
+function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: number, player: Game["player"], highContrastTelegraphs = false) {
+  if (enemy.kind === "burrower" && (enemy.burrowPhase === "underground" || enemy.burrowPhase === "erupting")) return;
   const t = time * (enemy.kind === "skitter" ? 13 : 7) + enemy.id;
   const bob = Math.sin(t) * (enemy.kind === "boss" ? 1.2 : 1.7);
   const squash = enemy.flash > 0 ? 1.18 : 1;
+  const visualScale = enemy.scale ?? 1;
   const flash = enemy.flash > 0;
   ctx.save();
   ctx.translate(Math.round(enemy.x), Math.round(enemy.y + bob));
-  ctx.scale(squash, 2 - squash);
+  ctx.scale(squash * visualScale, (2 - squash) * visualScale);
   ctx.globalAlpha = enemy.recovery > 0 ? .68 : 1;
   ctx.fillStyle = "rgba(0,0,0,.5)";
   ctx.fillRect(enemy.kind === "boss" ? -22 : -14, enemy.kind === "boss" ? 19 : 12, enemy.kind === "boss" ? 44 : 28, 5);
@@ -835,22 +1158,33 @@ function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: numb
     const aim = Math.atan2(player.y - enemy.y, player.x - enemy.x);
     const pulse = .58 + Math.sin(time * 24) * .2;
     ctx.save();
-    ctx.globalAlpha = pulse;
+    ctx.globalAlpha = highContrastTelegraphs ? 1 : pulse;
     ctx.rotate(aim);
-    if (enemy.kind === "volatile") {
+    if (enemy.kind === "broadcaster") {
       ctx.rotate(-aim);
-      ctx.strokeStyle = "#ff4d6d"; ctx.lineWidth = 4;
+      ctx.strokeStyle = highContrastTelegraphs ? "#ffffff" : "#ff4d9a"; ctx.lineWidth = highContrastTelegraphs ? 5 : 3;
+      for (const radius of [24, 34, 45]) { ctx.beginPath(); ctx.arc(0, 0, radius, -2.7, -.45); ctx.stroke(); }
+      ctx.fillStyle = highContrastTelegraphs ? "#ffffff" : "#ff8fab";
+      ctx.fillRect(-3, -29, 6, 12);
+    } else if (enemy.kind === "bulwark") {
+      ctx.rotate(-aim);
+      ctx.strokeStyle = highContrastTelegraphs ? "#ffffff" : "#76c7dc"; ctx.lineWidth = highContrastTelegraphs ? 5 : 3;
+      ctx.beginPath(); ctx.arc(0, 0, 35, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, 0, 48, -.8, .8); ctx.stroke();
+    } else if (enemy.kind === "volatile") {
+      ctx.rotate(-aim);
+      ctx.strokeStyle = highContrastTelegraphs ? "#ffffff" : "#ff4d6d"; ctx.lineWidth = highContrastTelegraphs ? 6 : 4;
       ctx.beginPath(); ctx.arc(0, 0, 70, 0, Math.PI * 2); ctx.stroke();
-      ctx.fillStyle = "rgba(255,77,109,.12)";
+      ctx.fillStyle = highContrastTelegraphs ? "rgba(255,77,109,.38)" : "rgba(255,77,109,.12)";
       ctx.beginPath(); ctx.arc(0, 0, 70, 0, Math.PI * 2); ctx.fill();
     } else if (enemy.kind === "spitter") {
-      ctx.strokeStyle = "#a78bfa"; ctx.lineWidth = 3; ctx.setLineDash([8, 6]);
+      ctx.strokeStyle = highContrastTelegraphs ? "#ffffff" : "#a78bfa"; ctx.lineWidth = highContrastTelegraphs ? 5 : 3; ctx.setLineDash([8, 6]);
       ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(Math.min(220, Math.hypot(player.x - enemy.x, player.y - enemy.y)), 0); ctx.stroke();
     } else {
       const reach = enemy.kind === "boss" ? 50 : enemy.kind === "mimic" ? 42 : 36;
-      ctx.fillStyle = enemy.kind === "boss" ? "rgba(255,77,109,.22)" : "rgba(244,211,94,.2)";
+      ctx.fillStyle = highContrastTelegraphs ? "rgba(255,255,255,.34)" : enemy.kind === "boss" ? "rgba(255,77,109,.22)" : "rgba(244,211,94,.2)";
       ctx.beginPath(); ctx.moveTo(5, 0); ctx.arc(0, 0, reach, -.48, .48); ctx.closePath(); ctx.fill();
-      ctx.strokeStyle = enemy.kind === "boss" ? "#ff4d6d" : "#f4d35e"; ctx.lineWidth = 2; ctx.stroke();
+      ctx.strokeStyle = highContrastTelegraphs ? "#ffffff" : enemy.kind === "boss" ? "#ff4d6d" : "#f4d35e"; ctx.lineWidth = highContrastTelegraphs ? 4 : 2; ctx.stroke();
     }
     ctx.restore();
   }
@@ -965,6 +1299,53 @@ function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: numb
     ctx.fillRect(-6, 11, 12, 5);
     ctx.fillStyle = "#f4d35e";
     ctx.fillRect(-2, -21, 4, 6); ctx.fillRect(1, -22, 6, 3);
+  } else if (enemy.kind === "broadcaster") {
+    const signal = Math.sin(t * 1.3) > 0;
+    ctx.fillStyle = flash ? "#fff" : "#35152c";
+    ctx.fillRect(-14, -10, 28, 27); ctx.fillRect(-10, 16, 7, 6); ctx.fillRect(3, 16, 7, 6);
+    ctx.fillStyle = flash ? "#fff" : "#a82f78";
+    ctx.fillRect(-11, -15, 22, 25);
+    ctx.fillStyle = "#ff8fab";
+    ctx.fillRect(-7, -9, 14, 5); ctx.fillRect(-8, 1, 16, 3);
+    ctx.fillStyle = "#160b13";
+    ctx.fillRect(-5, -8, 10, 4);
+    ctx.strokeStyle = flash ? "#fff" : "#f4d35e"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, -15); ctx.lineTo(0, -27); ctx.lineTo(8, -33); ctx.stroke();
+    ctx.fillStyle = signal ? "#fff3b0" : "#ff4d9a"; ctx.fillRect(6, -35, 6, 6);
+  } else if (enemy.kind === "bulwark") {
+    const hover = Math.sin(t) * 2;
+    ctx.strokeStyle = flash ? "#fff" : "#76c7dc"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(0, -2, 17, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = flash ? "#fff" : "#295b68";
+    ctx.fillRect(-15, -10, 30, 20); ctx.fillRect(-21, -5, 7, 12); ctx.fillRect(14, -5, 7, 12);
+    ctx.fillStyle = flash ? "#fff" : "#76c7dc";
+    ctx.fillRect(-10, -14, 20, 8); ctx.fillRect(-5, -3, 10, 7);
+    ctx.fillStyle = "#d9f7ff"; ctx.fillRect(-3, -1, 6, 3);
+    ctx.fillStyle = "#16333a"; ctx.fillRect(-10, 12 + hover, 7, 5); ctx.fillRect(3, 12 - hover, 7, 5);
+  } else if (enemy.kind === "burrower") {
+    const drill = Math.floor(time * 14) % 2;
+    ctx.fillStyle = flash ? "#fff" : "#713019";
+    ctx.fillRect(-15, -9, 27, 22); ctx.fillRect(-10, 12, 7, 7); ctx.fillRect(3, 12, 7, 7);
+    ctx.fillStyle = flash ? "#fff" : "#c65321";
+    ctx.fillRect(-11, -14, 22, 25);
+    ctx.fillStyle = "#ffad42"; ctx.fillRect(-8, -10, 16, 5);
+    ctx.fillStyle = "#2b1810"; ctx.fillRect(-5, -8, 10, 4);
+    ctx.fillStyle = drill ? "#dce7e4" : "#87938f";
+    ctx.beginPath(); ctx.moveTo(11, -10); ctx.lineTo(27, 0); ctx.lineTo(11, 10); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#ff4d6d"; ctx.fillRect(-3, -7, 6, 3);
+  } else if (enemy.kind === "ninja") {
+    const scarf = Math.sin(t) * 4;
+    ctx.fillStyle = flash ? "#fff" : "#130f20";
+    ctx.fillRect(-10, 9, 8, 10); ctx.fillRect(3, 9, 8, 10);
+    ctx.fillStyle = flash ? "#fff" : "#3b2763";
+    ctx.fillRect(-13, -9, 26, 24); ctx.fillRect(-16, -4, 6, 17); ctx.fillRect(10, -4, 6, 17);
+    ctx.fillStyle = flash ? "#fff" : "#211638";
+    ctx.beginPath(); ctx.moveTo(-15, -11); ctx.lineTo(0, -25); ctx.lineTo(15, -11); ctx.lineTo(11, 2); ctx.lineTo(-11, 2); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#d8ccff"; ctx.fillRect(-9, -10, 18, 7);
+    ctx.fillStyle = "#111018"; ctx.fillRect(-7, -9, 5, 4); ctx.fillRect(3, -9, 5, 4);
+    ctx.fillStyle = "#ff4d9a"; ctx.fillRect(-5, -8, 3, 2); ctx.fillRect(4, -8, 3, 2);
+    ctx.fillStyle = "#a78bfa"; ctx.fillRect(10, -1, 18 + scarf, 5); ctx.fillRect(18 + scarf, 3, 13, 4);
+    ctx.save(); ctx.rotate(-.7); ctx.fillStyle = "#dce7e4"; ctx.fillRect(12, -2, 20, 3); ctx.fillStyle = "#f4d35e"; ctx.fillRect(8, -4, 6, 7); ctx.restore();
   } else if (enemy.kind === "mimic") {
     const jaw = 5 + Math.abs(Math.sin(t)) * 6;
     const foot = Math.sin(t) * 3;
@@ -1012,6 +1393,24 @@ function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: numb
     ctx.strokeStyle = "#ff4d6d";
     ctx.lineWidth = 3;
     ctx.beginPath(); ctx.arc(0, 0, 19 + Math.sin(t * 2) * 3, 0, Math.PI * 2); ctx.stroke();
+  } else if (enemy.variant === "ninja") {
+    const pulse = 1 + Math.sin(t) * .04;
+    ctx.scale(pulse, pulse);
+    const scarf = Math.sin(t * .7) * 5;
+    ctx.fillStyle = flash ? "#fff" : "#120b20";
+    ctx.fillRect(-17, 16, 12, 15); ctx.fillRect(6, 16, 12, 15);
+    ctx.fillStyle = flash ? "#fff" : "#3b2763";
+    ctx.fillRect(-25, -8, 50, 36); ctx.fillRect(-34, -2, 12, 30); ctx.fillRect(22, -2, 12, 30);
+    ctx.fillStyle = flash ? "#fff" : "#211638";
+    ctx.beginPath(); ctx.moveTo(-25, -15); ctx.lineTo(0, -38); ctx.lineTo(25, -15); ctx.lineTo(20, 4); ctx.lineTo(-20, 4); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#d8ccff"; ctx.fillRect(-16, -18, 32, 11);
+    ctx.fillStyle = "#111018"; ctx.fillRect(-13, -16, 10, 6); ctx.fillRect(4, -16, 10, 6);
+    ctx.fillStyle = "#ff4d9a"; ctx.fillRect(-9, -14, 5, 3); ctx.fillRect(7, -14, 5, 3);
+    ctx.fillStyle = "#a78bfa"; ctx.fillRect(20, -3, 30 + scarf, 7); ctx.fillRect(39 + scarf, 4, 20, 6);
+    ctx.strokeStyle = "#f4d35e"; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(-31, 18); ctx.lineTo(-45, -14); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(31, 18); ctx.lineTo(45, -14); ctx.stroke();
+    ctx.fillStyle = "#dce7e4"; ctx.fillRect(-49, -17, 12, 6); ctx.fillRect(37, -17, 12, 6);
   } else {
     const pulse = 1 + Math.sin(t) * .06;
     ctx.scale(pulse, pulse);
@@ -1048,8 +1447,8 @@ function drawEnemySprite(ctx: CanvasRenderingContext2D, enemy: Enemy, time: numb
   }
   ctx.restore();
 
-  const barW = enemy.kind === "boss" ? 46 : 28;
-  const barY = enemy.y - (enemy.kind === "boss" ? 34 : 24);
+  const barW = enemy.kind === "boss" ? 46 : 28 * visualScale;
+  const barY = enemy.y - (enemy.kind === "boss" ? 34 : 24 * visualScale);
   ctx.fillStyle = "#351419";
   ctx.fillRect(enemy.x - barW / 2, barY, barW, 4);
   ctx.fillStyle = "#ff4d6d";
@@ -1147,7 +1546,7 @@ function drawRangedPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
   }
 }
 
-function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
+function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game, shakeScale = 1) {
   const p = game.player;
   if (p.classId !== "knight") { drawRangedPlayerSprite(ctx, game); return; }
   const weapon = getWeapon(p.weaponId);
@@ -1156,7 +1555,7 @@ function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
   const facingAngle = Math.atan2(p.dirY, p.dirX);
   ctx.save();
   ctx.translate(Math.round(p.x), Math.round(p.y + bob));
-  if (game.shake > 0) ctx.rotate(Math.sin(game.elapsed * 80) * .035);
+  if (game.shake > 0 && shakeScale > 0) ctx.rotate(Math.sin(game.elapsed * 80) * .035 * shakeScale);
   if (p.furyTime > 0) {
     ctx.strokeStyle = `rgba(255,77,109,${.45 + Math.sin(game.elapsed * 10) * .2})`;
     ctx.lineWidth = 3;
@@ -1249,7 +1648,164 @@ function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game) {
   }
 }
 
-function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
+function drawMouseAim(ctx: CanvasRenderingContext2D, game: Game, showAimLine = true) {
+  const player = game.player;
+  const distance = Math.max(28, Math.min(220, player.aimDistance));
+  const x = player.x + player.dirX * distance;
+  const y = player.y + player.dirY * distance;
+  const color = player.classId === "mage" ? "#a78bfa" : player.classId === "archer" ? "#34d399" : "#f4d35e";
+  const pulse = 1 + Math.sin(game.elapsed * 9) * .12;
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  if (showAimLine) {
+    ctx.globalAlpha = .76;
+    ctx.setLineDash([3, 4]);
+    ctx.lineDashOffset = -game.elapsed * 18;
+    ctx.beginPath();
+    ctx.moveTo(player.x + player.dirX * 18, player.y + player.dirY * 18);
+    ctx.lineTo(x - player.dirX * 9, y - player.dirY * 9);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.globalAlpha = .94;
+  ctx.beginPath();
+  ctx.arc(x, y, 7 * pulse, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x - 12, y); ctx.lineTo(x - 4, y);
+  ctx.moveTo(x + 4, y); ctx.lineTo(x + 12, y);
+  ctx.moveTo(x, y - 12); ctx.lineTo(x, y - 4);
+  ctx.moveTo(x, y + 4); ctx.lineTo(x, y + 12);
+  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.fillRect(x - 1, y - 1, 2, 2);
+  ctx.restore();
+}
+
+function drawVersusPlayerHeadshot(ctx: CanvasRenderingContext2D, classId: PlayerClassId, x: number, y: number) {
+  const accent = classId === "mage" ? "#a78bfa" : classId === "archer" ? "#34d399" : "#76c7dc";
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(3.1, 3.1);
+  ctx.fillStyle = "rgba(0,0,0,.42)";
+  ctx.fillRect(-31, 17, 62, 26);
+  ctx.fillStyle = classId === "mage" ? "#281b46" : classId === "archer" ? "#234334" : "#3b82a0";
+  ctx.fillRect(-28, 12, 56, 28);
+  ctx.fillStyle = accent;
+  ctx.fillRect(-28, 12, 9, 28); ctx.fillRect(19, 12, 9, 28);
+  if (classId === "mage" || classId === "archer") {
+    ctx.fillStyle = classId === "mage" ? "#60458f" : "#315b38";
+    ctx.beginPath(); ctx.moveTo(-24, 2); ctx.lineTo(-17, -29); ctx.lineTo(0, -40); ctx.lineTo(17, -29); ctx.lineTo(24, 2); ctx.lineTo(17, 22); ctx.lineTo(-17, 22); ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = "#efc39f";
+  ctx.fillRect(-16, -23, 32, 35);
+  if (classId === "knight") {
+    ctx.fillStyle = "#6b3f2b";
+    ctx.fillRect(-18, -31, 36, 11); ctx.fillRect(-18, -23, 8, 13);
+  } else {
+    ctx.fillStyle = classId === "mage" ? "#60458f" : "#315b38";
+    ctx.fillRect(-18, -29, 36, 10); ctx.fillRect(-20, -23, 7, 28); ctx.fillRect(13, -23, 7, 28);
+  }
+  ctx.fillStyle = "#111817";
+  ctx.fillRect(-11, -13, 7, 5); ctx.fillRect(5, -13, 7, 5);
+  ctx.fillStyle = accent;
+  ctx.fillRect(-8, -12, 3, 3); ctx.fillRect(7, -12, 3, 3);
+  ctx.fillStyle = "#8b4d3b";
+  ctx.fillRect(-6, 2, 13, 4);
+  ctx.fillStyle = "#f4d35e";
+  ctx.fillRect(-29, 23, 58, 6);
+  ctx.restore();
+}
+
+function drawVersusBossHeadshot(ctx: CanvasRenderingContext2D, x: number, y: number, ninja = false) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(3.1, 3.1);
+  if (ninja) {
+    ctx.fillStyle = "rgba(0,0,0,.5)"; ctx.fillRect(-35, 14, 70, 30);
+    ctx.fillStyle = "#3b2763"; ctx.fillRect(-34, 5, 68, 39); ctx.fillRect(-43, 14, 12, 29); ctx.fillRect(31, 14, 12, 29);
+    ctx.fillStyle = "#211638";
+    ctx.beginPath(); ctx.moveTo(-30, 1); ctx.lineTo(0, -43); ctx.lineTo(30, 1); ctx.lineTo(24, 24); ctx.lineTo(-24, 24); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#d8ccff"; ctx.fillRect(-22, -17, 44, 14);
+    ctx.fillStyle = "#111018"; ctx.fillRect(-17, -14, 13, 8); ctx.fillRect(5, -14, 13, 8);
+    ctx.fillStyle = "#ff4d9a"; ctx.fillRect(-12, -12, 6, 4); ctx.fillRect(9, -12, 6, 4);
+    ctx.fillStyle = "#a78bfa"; ctx.fillRect(21, 3, 30, 8); ctx.fillRect(38, 11, 22, 7);
+    ctx.fillStyle = "#f4d35e"; ctx.fillRect(-23, 21, 46, 6);
+    ctx.restore();
+    return;
+  }
+  ctx.fillStyle = "rgba(0,0,0,.5)";
+  ctx.fillRect(-34, 13, 68, 31);
+  ctx.fillStyle = "#741b35";
+  ctx.fillRect(-34, 8, 68, 34); ctx.fillRect(-42, 14, 12, 27); ctx.fillRect(30, 14, 12, 27);
+  ctx.fillStyle = "#ff4d6d";
+  ctx.fillRect(-27, 5, 54, 31);
+  ctx.fillStyle = "#353d3b";
+  ctx.fillRect(-25, -32, 50, 40);
+  ctx.fillStyle = "#18211e";
+  ctx.fillRect(-19, -25, 38, 23);
+  ctx.fillStyle = "#76c7dc";
+  ctx.fillRect(-14, -18, 11, 8); ctx.fillRect(4, -18, 11, 8);
+  ctx.fillStyle = "#ff4d6d";
+  ctx.fillRect(-10, -16, 5, 4); ctx.fillRect(7, -16, 5, 4);
+  ctx.fillStyle = "#f4d35e";
+  ctx.fillRect(-20, 1, 40, 6); ctx.fillRect(-5, 8, 10, 24);
+  ctx.strokeStyle = "#f4d35e"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(-13, -32); ctx.lineTo(-21, -44); ctx.lineTo(-27, -42); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(13, -32); ctx.lineTo(21, -44); ctx.lineTo(27, -42); ctx.stroke();
+  ctx.restore();
+}
+
+function drawBossVersusSplash(ctx: CanvasRenderingContext2D, game: Game) {
+  const ninja = game.floorNumber === 2;
+  const progress = 1 - game.bossIntroTime / BOSS_VERSUS_DURATION;
+  const slam = 1 - Math.pow(1 - Math.min(1, progress / .28), 3);
+  const fade = game.bossIntroTime < .35 ? game.bossIntroTime / .35 : 1;
+  const playerX = 225 - (1 - slam) * 270;
+  const bossX = 543 + (1 - slam) * 270;
+  ctx.save();
+  ctx.globalAlpha = fade;
+  ctx.fillStyle = "#050706";
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+  ctx.fillStyle = "#102f39";
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(450, 0); ctx.lineTo(318, HEIGHT); ctx.lineTo(0, HEIGHT); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#5c1029";
+  ctx.beginPath(); ctx.moveTo(450, 0); ctx.lineTo(WIDTH, 0); ctx.lineTo(WIDTH, HEIGHT); ctx.lineTo(318, HEIGHT); ctx.closePath(); ctx.fill();
+  ctx.globalAlpha = fade * .28;
+  ctx.strokeStyle = "#d9f7ff"; ctx.lineWidth = 3;
+  for (let y = -80; y < HEIGHT + 100; y += 32) { ctx.beginPath(); ctx.moveTo(0, y + progress * 90); ctx.lineTo(330, y - 90 + progress * 90); ctx.stroke(); }
+  ctx.strokeStyle = "#ff8fab";
+  for (let y = -80; y < HEIGHT + 100; y += 32) { ctx.beginPath(); ctx.moveTo(WIDTH, y + progress * 90); ctx.lineTo(438, y - 90 + progress * 90); ctx.stroke(); }
+  ctx.globalAlpha = fade;
+  drawPixelText(ctx, "FINAL ENCOUNTER // LIVE", WIDTH / 2, 38, "#fff3b0", "center");
+  drawVersusPlayerHeadshot(ctx, game.player.classId, playerX, 250);
+  drawVersusBossHeadshot(ctx, bossX, 250, ninja);
+  ctx.fillStyle = "rgba(4,6,6,.86)";
+  ctx.fillRect(117, 393, 233, 54); ctx.fillRect(418, 393, 233, 54);
+  ctx.strokeStyle = "#76c7dc"; ctx.lineWidth = 3; ctx.strokeRect(117, 393, 233, 54);
+  ctx.strokeStyle = "#ff4d6d"; ctx.strokeRect(418, 393, 233, 54);
+  drawPixelText(ctx, "SUBJECT 404", 233, 414, "#76c7dc", "center");
+  drawPixelText(ctx, PLAYER_CLASSES[game.player.classId].name.toUpperCase(), 233, 433, "#d9f7ff", "center");
+  drawPixelText(ctx, ninja ? "SHADOW NETWORK" : "CHANNEL 13", 535, 414, ninja ? "#a78bfa" : "#ff8fab", "center");
+  drawPixelText(ctx, ninja ? "NINJA MASTER" : "BROADCAST WARDEN", 535, 433, "#fff3b0", "center");
+  const vsScale = .84 + Math.sin(progress * Math.PI * 7) * .06;
+  ctx.save();
+  ctx.translate(WIDTH / 2, 258); ctx.rotate(-.08); ctx.scale(vsScale, vsScale);
+  ctx.font = "italic 1000 96px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.lineJoin = "miter"; ctx.lineWidth = 15; ctx.strokeStyle = "#08090a"; ctx.strokeText("VS", 0, 0);
+  ctx.lineWidth = 7; ctx.strokeStyle = "#fff3b0"; ctx.strokeText("VS", 0, 0);
+  ctx.fillStyle = "#ff4d6d"; ctx.fillText("VS", 0, 0);
+  ctx.restore();
+  if (progress < .13) {
+    ctx.globalAlpha = fade * (1 - progress / .13);
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, WIDTH, HEIGHT);
+  }
+  ctx.restore();
+}
+
+function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: ControlMode, comfort: ComfortSettings = DEFAULT_COMFORT_SETTINGS) {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = "#050706";
@@ -1257,10 +1813,17 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
 
   const current = roomFor(game.player.x, game.player.y);
   const roomNumber = current.row * ROOM_COLS + current.col + 1;
+  const roomLeft = current.col * 8 * TILE;
+  const roomTop = current.row * 8 * TILE;
+  const roomRight = roomLeft + 8 * TILE;
+  const roomBottom = roomTop + 8 * TILE;
+  const isInActiveRoom = (point: { x: number; y: number }, padding = 24) =>
+    point.x >= roomLeft - padding && point.x <= roomRight + padding && point.y >= roomTop - padding && point.y <= roomBottom + padding;
   const camX = current.col * 8 * TILE + 4 * TILE;
   const camY = current.row * 8 * TILE + 4 * TILE;
-  const shakeX = game.shake > 0 ? (Math.random() - .5) * 7 : 0;
-  const shakeY = game.shake > 0 ? (Math.random() - .5) * 7 : 0;
+  const shakeScale = comfort.screenShake === "off" ? 0 : comfort.screenShake === "low" ? .35 : 1;
+  const shakeX = game.shake > 0 ? (Math.random() - .5) * 7 * shakeScale : 0;
+  const shakeY = game.shake > 0 ? (Math.random() - .5) * 7 * shakeScale : 0;
 
   ctx.save();
   ctx.beginPath();
@@ -1268,10 +1831,31 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.clip();
   ctx.setTransform(2, 0, 0, 2, WIDTH / 2 - camX * 2 + shakeX, HEIGHT / 2 - camY * 2 + shakeY);
 
-  for (let ty = 0; ty < MAP_H; ty++) {
-    for (let tx = 0; tx < MAP_W; tx++) {
+  // Only the active room can reach the clipped viewport. Limiting tile work here
+  // avoids redrawing the other eleven rooms on every animation frame.
+  const firstTileX = current.col * 8;
+  const firstTileY = current.row * 8;
+  const lastTileX = Math.min(MAP_W - 1, firstTileX + 8);
+  const lastTileY = Math.min(MAP_H - 1, firstTileY + 8);
+  for (let ty = firstTileY; ty <= lastTileY; ty++) {
+    for (let tx = firstTileX; tx <= lastTileX; tx++) {
+      const obstacle = !activeMazeRooms.has(mazeRoomIndexForTile(tx, ty)) && isRoomObstacleTile(tx, ty, ROOM_COLS, ROOM_ROWS);
       const wall = isWallTile(tx, ty);
-      if (wall) {
+      if (obstacle) {
+        ctx.fillStyle = (tx + ty) % 2 ? "#101a17" : "#14201c";
+        ctx.fillRect(tx * TILE, ty * TILE, TILE, TILE);
+        ctx.shadowColor = "#76c7dc";
+        ctx.shadowBlur = 7;
+        ctx.fillStyle = "#243c37";
+        ctx.fillRect(tx * TILE + 4, ty * TILE + 4, TILE - 8, TILE - 8);
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = "#58766c";
+        ctx.fillRect(tx * TILE + 7, ty * TILE + 5, TILE - 14, 5);
+        ctx.fillStyle = "#111d1a";
+        ctx.fillRect(tx * TILE + 8, ty * TILE + 20, TILE - 16, 7);
+        ctx.fillStyle = "#76c7dc";
+        ctx.fillRect(tx * TILE + 14, ty * TILE + 12, 4, 4);
+      } else if (wall) {
         ctx.fillStyle = (tx + ty) % 2 ? "#26312d" : "#303b36";
         ctx.fillRect(tx * TILE, ty * TILE, TILE, TILE);
         ctx.fillStyle = "#53645d";
@@ -1294,44 +1878,128 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   }
 
   // Bright threshold frames make every available passage readable at a glance.
-  const roomLeft = current.col * 8 * TILE;
-  const roomTop = current.row * 8 * TILE;
   const currentRoomIndex = current.row * ROOM_COLS + current.col;
   const roomLocked = isRoomLocked(game, currentRoomIndex);
+  const roomReleased = game.roomClearFx > 0 && game.roomClearRoomIndex === currentRoomIndex;
+  const hazardTiles = game.roomKinds[currentRoomIndex] === "maze" ? [] : hazardTilesForRoom(currentRoomIndex, ROOM_COLS, ROOM_COLS * ROOM_ROWS);
+  const hazardState = hazardStateAt(game.elapsed, currentRoomIndex);
+  if (hazardState !== "dormant") {
+    const active = hazardState === "active";
+    const hazardPulse = .45 + Math.sin(game.elapsed * (active ? 18 : 9)) * .18;
+    hazardTiles.forEach((tile) => {
+      ctx.fillStyle = active ? `rgba(255,77,109,${.44 + hazardPulse * .3})` : `rgba(244,211,94,${.14 + hazardPulse * .16})`;
+      ctx.fillRect(tile.x * TILE + 2, tile.y * TILE + 2, TILE - 4, TILE - 4);
+      ctx.strokeStyle = active ? "#ff8fab" : "#f4d35e";
+      ctx.lineWidth = active ? 3 : 2;
+      ctx.strokeRect(tile.x * TILE + 4, tile.y * TILE + 4, TILE - 8, TILE - 8);
+      ctx.fillStyle = active ? "#fff3b0" : "#8b6f27";
+      ctx.fillRect(tile.x * TILE + 7, tile.y * TILE + 14, TILE - 14, 4);
+    });
+    const hazardCenterX = (hazardTiles[0]?.x ?? 0) * TILE + TILE * 1.5;
+    const hazardY = (hazardTiles[0]?.y ?? 0) * TILE - 7;
+    if (hazardTiles.length) drawPixelText(ctx, active ? "FLOOR SURGE" : "SURGE WARNING", hazardCenterX, hazardY, active ? "#ff8fab" : "#f4d35e", "center");
+  }
+  game.burrowHazards.forEach((hazard) => {
+    if (!isInActiveRoom(hazard)) return;
+    const pulse = .72 + Math.sin(game.elapsed * 17) * .16;
+    ctx.fillStyle = `rgba(255,107,53,${Math.min(.28, hazard.life * .15)})`;
+    ctx.beginPath(); ctx.arc(hazard.x, hazard.y, 34, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = comfort.highContrastTelegraphs ? "#ffffff" : `rgba(255,173,66,${pulse})`;
+    ctx.lineWidth = comfort.highContrastTelegraphs ? 4 : 2;
+    ctx.beginPath(); ctx.arc(hazard.x, hazard.y, 34, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = comfort.highContrastTelegraphs ? "#ffffff" : "#7a2619";
+    for (let offset = -22; offset <= 22; offset += 11) ctx.fillRect(hazard.x + offset - 2, hazard.y - 3, 5, 6);
+  });
+  game.enemies.filter((enemy) => enemy.kind === "burrower" && enemy.burrowPhase).forEach((enemy) => {
+    if (!isInActiveRoom(enemy)) return;
+    const targetX = enemy.targetX ?? enemy.x;
+    const targetY = enemy.targetY ?? enemy.y;
+    const progress = 1 - Math.min(1, (enemy.phaseTime ?? 0) / (enemy.burrowPhase === "digging" ? .62 : enemy.burrowPhase === "erupting" ? .58 : .8));
+    ctx.strokeStyle = comfort.highContrastTelegraphs ? "#ffffff" : enemy.burrowPhase === "erupting" ? "#ff4d6d" : "#ffad42";
+    ctx.lineWidth = comfort.highContrastTelegraphs ? 4 : 3;
+    ctx.setLineDash(enemy.burrowPhase === "underground" ? [5, 5] : []);
+    ctx.beginPath(); ctx.arc(targetX, targetY, 16 + progress * 27, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = comfort.highContrastTelegraphs ? "rgba(255,255,255,.24)" : "rgba(255,77,109,.16)";
+    if (enemy.burrowPhase === "erupting") { ctx.beginPath(); ctx.arc(targetX, targetY, 38, 0, Math.PI * 2); ctx.fill(); }
+    if (enemy.burrowPhase === "underground") {
+      ctx.fillStyle = comfort.highContrastTelegraphs ? "#ffffff" : "#ffad42";
+      ctx.fillRect(enemy.x - 9, enemy.y - 3, 6, 6); ctx.fillRect(enemy.x + 2, enemy.y + 2, 8, 5);
+    }
+    drawPixelText(ctx, enemy.burrowPhase === "digging" ? "BURROWING" : enemy.burrowPhase === "erupting" ? "ERUPTION" : "SCRAP TRAIL", targetX, targetY - 45, comfort.highContrastTelegraphs ? "#ffffff" : "#ffad42", "center");
+  });
   const doorY = roomTop + 4.5 * TILE;
   const doorX = roomLeft + 4.5 * TILE;
   const pulse = .72 + Math.sin(game.elapsed * 5) * .2;
+  const activePylons = game.pylons.filter((pylon) => pylon.active).length;
+  const pylonTotal = game.pylons.length;
+  const isBossEntranceLocked = (roomIndex: number) =>
+    game.roomKinds[roomIndex] === "boss" && !bossGateOpen(game);
+  const bossGateLabel = game.bossAwakenTime > 0 ? "POWERING BOSS" : `${activePylons}/${pylonTotal} BOSS`;
+  const drawBossGate = (locked: boolean, x: number, y: number, vertical: boolean) => {
+    if (!locked) return;
+    ctx.save();
+    ctx.shadowColor = "#ff4d6d";
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = "#7f1d35";
+    if (vertical) {
+      ctx.fillRect(x - 5, y - 56, 10, 112);
+      ctx.fillStyle = "#ff8fab";
+      ctx.fillRect(x - 8, y - 30, 16, 8);
+      ctx.fillRect(x - 8, y + 22, 16, 8);
+    } else {
+      ctx.fillRect(x - 56, y - 5, 112, 10);
+      ctx.fillStyle = "#ff8fab";
+      ctx.fillRect(x - 30, y - 8, 8, 16);
+      ctx.fillRect(x + 22, y - 8, 8, 16);
+    }
+    ctx.restore();
+  };
   ctx.save();
-  ctx.shadowColor = roomLocked ? "#ff4d6d" : "#f4d35e";
-  ctx.shadowBlur = 10;
-  ctx.fillStyle = roomLocked ? `rgba(255,77,109,${pulse})` : `rgba(244,211,94,${pulse})`;
-  ctx.strokeStyle = roomLocked ? "#ff8fab" : "#fff3b0";
-  ctx.lineWidth = 2;
+  ctx.shadowColor = roomLocked ? "#ff4d6d" : roomReleased ? "#34d399" : "#f4d35e";
+  ctx.shadowBlur = roomReleased ? 18 : 10;
+  ctx.fillStyle = roomLocked ? `rgba(255,77,109,${pulse})` : roomReleased ? `rgba(52,211,153,${pulse})` : `rgba(244,211,94,${pulse})`;
+  ctx.strokeStyle = roomLocked ? "#ff8fab" : roomReleased ? "#d8ffe9" : "#fff3b0";
+  ctx.lineWidth = roomReleased ? 3 : 2;
   if (current.col > 0) {
     const hint = routeHint(game.roomKinds[currentRoomIndex - 1]);
+    const bossEntranceLocked = isBossEntranceLocked(currentRoomIndex - 1);
     ctx.fillRect(roomLeft + 2, doorY - 58, 7, 116);
     ctx.strokeRect(roomLeft + 1, doorY - 62, 13, 124);
-    drawPixelText(ctx, `◀ ${hint.icon}`, roomLeft + 28, doorY + 4, hint.color, "center");
-    drawPixelText(ctx, hint.label, roomLeft + 40, doorY - 12, hint.color, "center");
+    if (bossEntranceLocked) drawPixelText(ctx, `◀ ${bossGateLabel}`, roomLeft + 48, doorY - 12, "#ff8fab", "center");
+    else {
+      drawPixelText(ctx, `◀ ${hint.icon}`, roomLeft + 28, doorY + 4, hint.color, "center");
+      drawPixelText(ctx, hint.label, roomLeft + 40, doorY - 12, hint.color, "center");
+    }
+    drawBossGate(bossEntranceLocked, roomLeft + 4, doorY, true);
   }
   if (current.col < ROOM_COLS - 1) {
     const hint = routeHint(game.roomKinds[currentRoomIndex + 1]);
+    const bossEntranceLocked = isBossEntranceLocked(currentRoomIndex + 1);
     ctx.fillRect(roomLeft + 8 * TILE - 9, doorY - 58, 7, 116);
     ctx.strokeRect(roomLeft + 8 * TILE - 14, doorY - 62, 13, 124);
-    drawPixelText(ctx, `${hint.icon} ▶`, roomLeft + 8 * TILE - 28, doorY + 4, hint.color, "center");
-    drawPixelText(ctx, hint.label, roomLeft + 8 * TILE - 40, doorY - 12, hint.color, "center");
+    if (bossEntranceLocked) drawPixelText(ctx, `${bossGateLabel} ▶`, roomLeft + 8 * TILE - 48, doorY - 12, "#ff8fab", "center");
+    else {
+      drawPixelText(ctx, `${hint.icon} ▶`, roomLeft + 8 * TILE - 28, doorY + 4, hint.color, "center");
+      drawPixelText(ctx, hint.label, roomLeft + 8 * TILE - 40, doorY - 12, hint.color, "center");
+    }
+    drawBossGate(bossEntranceLocked, roomLeft + 8 * TILE - 4, doorY, true);
   }
   if (current.row > 0) {
     const hint = routeHint(game.roomKinds[currentRoomIndex - ROOM_COLS]);
+    const bossEntranceLocked = isBossEntranceLocked(currentRoomIndex - ROOM_COLS);
     ctx.fillRect(doorX - 58, roomTop + 2, 116, 7);
     ctx.strokeRect(doorX - 62, roomTop + 1, 124, 13);
-    drawPixelText(ctx, `▲ ${hint.icon} ${hint.label}`, doorX, roomTop + 27, hint.color, "center");
+    drawPixelText(ctx, bossEntranceLocked ? `▲ ${bossGateLabel}` : `▲ ${hint.icon} ${hint.label}`, doorX, roomTop + 27, bossEntranceLocked ? "#ff8fab" : hint.color, "center");
+    drawBossGate(bossEntranceLocked, doorX, roomTop + 4, false);
   }
   if (current.row < ROOM_ROWS - 1) {
     const hint = routeHint(game.roomKinds[currentRoomIndex + ROOM_COLS]);
+    const bossEntranceLocked = isBossEntranceLocked(currentRoomIndex + ROOM_COLS);
     ctx.fillRect(doorX - 58, roomTop + 8 * TILE - 9, 116, 7);
     ctx.strokeRect(doorX - 62, roomTop + 8 * TILE - 14, 124, 13);
-    drawPixelText(ctx, `▼ ${hint.icon} ${hint.label}`, doorX, roomTop + 8 * TILE - 20, hint.color, "center");
+    drawPixelText(ctx, bossEntranceLocked ? `▼ ${bossGateLabel}` : `▼ ${hint.icon} ${hint.label}`, doorX, roomTop + 8 * TILE - 20, bossEntranceLocked ? "#ff8fab" : hint.color, "center");
+    drawBossGate(bossEntranceLocked, doorX, roomTop + 8 * TILE - 4, false);
   }
   ctx.restore();
 
@@ -1341,6 +2009,19 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.lineWidth = 2;
   ctx.strokeRect(centerX - 46, centerY - 46, 92, 92);
   drawPixelText(ctx, `ROOM ${String(roomNumber).padStart(2, "0")} // ${game.roomKinds[currentRoomIndex].toUpperCase()}`, centerX, centerY - 51, roomLocked ? "#ff8fab" : "#5a8876", "center");
+  if (roomReleased) {
+    const releaseAlpha = Math.min(1, game.roomClearFx * 2.2);
+    ctx.save();
+    ctx.globalAlpha = releaseAlpha;
+    ctx.fillStyle = "rgba(5,16,12,.88)";
+    ctx.fillRect(centerX - 72, centerY - 23, 144, 43);
+    ctx.strokeStyle = "#34d399";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(centerX - 70, centerY - 21, 140, 39);
+    drawPixelText(ctx, "SIGNAL SECURED", centerX, centerY - 4, "#d8ffe9", "center");
+    drawPixelText(ctx, "EXITS RELEASED", centerX, centerY + 11, "#34d399", "center");
+    ctx.restore();
+  }
 
   const safeX = SAFE_X;
   const safeY = SAFE_Y;
@@ -1358,6 +2039,7 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   if (!gateOpen) ctx.fillRect(EXIT_X - 11, EXIT_Y - 3, 22, 5);
 
   game.pylons.forEach((pylon) => {
+    if (!isInActiveRoom(pylon)) return;
     const wave = Math.sin(game.elapsed * 5) * 3;
     ctx.fillStyle = pylon.active ? "#f4d35e" : "#7b5c20";
     ctx.fillRect(pylon.x - 8, pylon.y - 18, 16, 36);
@@ -1372,7 +2054,18 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
     }
   });
 
+  if (game.roomKinds[currentRoomIndex] === "maze" && !game.mazeSolved.has(currentRoomIndex)) {
+    const goal = mazeGoalPosition(currentRoomIndex, ROOM_COLS, TILE);
+    const pulse = 7 + Math.sin(game.elapsed * 6) * 2;
+    ctx.save(); ctx.translate(goal.x, goal.y); ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = "rgba(118,199,220,.24)"; ctx.fillRect(-pulse, -pulse, pulse * 2, pulse * 2);
+    ctx.fillStyle = "#76c7dc"; ctx.fillRect(-5, -5, 10, 10);
+    ctx.fillStyle = "#d9f7ff"; ctx.fillRect(-2, -2, 4, 4); ctx.restore();
+    drawPixelText(ctx, "ROUTE CORE", goal.x, goal.y - 16, "#76c7dc", "center");
+  }
+
   game.chests.forEach((chest) => {
+    if (!isInActiveRoom(chest)) return;
     const bounce = chest.open ? 0 : Math.sin(game.elapsed * 4) * 1.2;
     const reveal = chest.openFx > 0 ? Math.sin((.8 - chest.openFx) * 10) * chest.openFx : 0;
     if (chest.openFx > 0) {
@@ -1387,6 +2080,7 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   });
 
   game.groundItems.forEach((item) => {
+    if (!isInActiveRoom(item)) return;
     const bob = Math.sin(game.elapsed * 5 + item.phase) * 3;
     const color = item.kind === "tonic" ? "#34d399" : item.kind === "bomb" ? "#76c7dc" : "#ff4d6d";
     ctx.fillStyle = "rgba(0,0,0,.5)";
@@ -1418,6 +2112,7 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   });
 
   game.groundWeapons.forEach((drop) => {
+    if (!isInActiveRoom(drop)) return;
     const bob = Math.sin(game.elapsed * 4 + drop.phase) * 3;
     const weapon = getWeapon(drop.weaponId);
     const color = weapon.rarity === "rare" ? "#a78bfa" : weapon.rarity === "uncommon" ? "#76c7dc" : "#f4d35e";
@@ -1436,7 +2131,17 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   });
 
   game.projectiles.forEach((shot) => {
-    if (shot.kind === "arc-bolt") {
+    if (!isInActiveRoom(shot)) return;
+    if (shot.kind === "shuriken") {
+      ctx.save(); ctx.translate(shot.x, shot.y); ctx.rotate(game.elapsed * 11 + shot.x * .01 + shot.y * .01);
+      ctx.fillStyle = "rgba(167,139,250,.28)"; ctx.fillRect(-11, -11, 22, 22);
+      ctx.fillStyle = "#d8ccff";
+      for (let blade = 0; blade < 4; blade++) {
+        ctx.rotate(Math.PI / 2);
+        ctx.beginPath(); ctx.moveTo(0, -3); ctx.lineTo(12, 0); ctx.lineTo(0, 3); ctx.closePath(); ctx.fill();
+      }
+      ctx.fillStyle = "#3b2763"; ctx.fillRect(-3, -3, 6, 6); ctx.restore();
+    } else if (shot.kind === "arc-bolt") {
       const color = shot.arsenalId ? CLASS_ARSENAL[shot.arsenalId].color : "#a78bfa";
       ctx.globalAlpha = .28; ctx.fillStyle = color; ctx.beginPath(); ctx.arc(shot.x, shot.y, shot.behavior === "blast" || shot.behavior === "pull" ? 12 : 10, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
       ctx.fillStyle = color; ctx.fillRect(shot.x - 5, shot.y - 5, 10, 10);
@@ -1455,23 +2160,59 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   });
 
   game.particles.forEach((particle) => {
+    if (!isInActiveRoom(particle)) return;
     ctx.globalAlpha = Math.max(0, particle.life / particle.maxLife);
     ctx.fillStyle = particle.color;
     ctx.fillRect(particle.x, particle.y, particle.size, particle.size);
   });
   ctx.globalAlpha = 1;
 
-  game.enemies.forEach((enemy) => drawEnemySprite(ctx, enemy, game.elapsed, game.player));
-  drawPlayerSprite(ctx, game);
+  if (controlMode === "mouse" && game.screen === "playing") drawMouseAim(ctx, game, comfort.aimLine);
+  game.enemies.filter((enemy) => enemy.kind === "bulwark" && enemy.hp > 0 && (enemy.shieldTime ?? 0) > 0).forEach((drone) => {
+    ctx.strokeStyle = comfort.highContrastTelegraphs ? "#ffffff" : "rgba(118,199,220,.8)";
+    ctx.lineWidth = comfort.highContrastTelegraphs ? 4 : 2;
+    ctx.beginPath(); ctx.arc(drone.x, drone.y, 82, 0, Math.PI * 2); ctx.stroke();
+    game.enemies.filter((ally) => ally.id !== drone.id && ally.hp > 0 && dist(ally, drone) < 82).forEach((ally) => {
+      ctx.globalAlpha = .55; ctx.beginPath(); ctx.moveTo(drone.x, drone.y); ctx.lineTo(ally.x, ally.y); ctx.stroke(); ctx.globalAlpha = 1;
+    });
+  });
+  game.enemies.forEach((enemy) => {
+    if (isInActiveRoom(enemy)) drawEnemySprite(ctx, enemy, game.elapsed, game.player, comfort.highContrastTelegraphs);
+  });
+  game.enemies.filter((enemy) => enemy.kind === "boss" && enemy.variant === "ninja" && enemy.hp > 0 && (enemy.restTime ?? 0) > 0).forEach((ninjaBoss) => {
+    ctx.strokeStyle = comfort.highContrastTelegraphs ? "#ffffff" : "#a78bfa";
+    ctx.lineWidth = comfort.highContrastTelegraphs ? 5 : 3;
+    ctx.setLineDash([7, 5]);
+    ctx.beginPath(); ctx.arc(ninjaBoss.x, ninjaBoss.y, 44 + Math.sin(game.elapsed * 8) * 4, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    drawPixelText(ctx, "REST MODE // INVINCIBLE", ninjaBoss.x, ninjaBoss.y - 52, "#d8ccff", "center");
+  });
+  drawPlayerSprite(ctx, game, shakeScale);
 
-  const activePylons = game.pylons.filter((pylon) => pylon.active).length;
+  game.combatText.forEach((popup) => {
+    if (!isInActiveRoom(popup)) return;
+    const progress = 1 - popup.life / popup.maxLife;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, popup.life * 4);
+    ctx.translate(Math.round(popup.x), Math.round(popup.y - progress * 18));
+    ctx.scale(popup.scale, popup.scale);
+    drawPixelText(ctx, popup.text, 0, 0, popup.color, "center");
+    ctx.restore();
+  });
+
   const boss = game.enemies.find((enemy) => enemy.kind === "boss");
-  if (boss && activePylons < 3) {
-    ctx.strokeStyle = "rgba(255,77,109,.78)";
+  if (boss && !game.bossEngaged) {
+    ctx.strokeStyle = game.bossAwakenTime > 0 ? "rgba(244,211,94,.92)" : "rgba(255,77,109,.78)";
     ctx.lineWidth = 4;
     ctx.beginPath();
-    ctx.arc(boss.x, boss.y, 32 + Math.sin(game.elapsed * 5) * 3, 0, Math.PI * 2);
+    ctx.arc(boss.x, boss.y, 32 + Math.sin(game.elapsed * (game.bossAwakenTime > 0 ? 14 : 5)) * 4, 0, Math.PI * 2);
     ctx.stroke();
+    if (game.bossAwakenTime > 0) {
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(boss.x, boss.y, 42 + Math.sin(game.elapsed * 10) * 6, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
 
   const p = game.player;
@@ -1512,6 +2253,49 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   drawPixelText(ctx, "NO SIGNAL BEYOND THIS ROOM", 0, 0, "#34463f", "center");
   ctx.restore();
 
+  const showingBossBar = Boolean(boss && (game.bossEngaged || game.bossIntroTime > 0) && currentRoomIndex === boss?.homeRoomIndex);
+  if (boss && showingBossBar) {
+    const phase = boss.variant === "ninja" ? null : bossPhaseForHealth(boss.hp, boss.maxHp);
+    const barX = 224;
+    const barY = 28;
+    const barWidth = 320;
+    ctx.fillStyle = "rgba(5,7,6,.9)";
+    ctx.fillRect(barX - 8, barY - 18, barWidth + 16, 42);
+    ctx.strokeStyle = "#ff8fab";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(barX, barY, barWidth, 12);
+    ctx.fillStyle = "#401424";
+    ctx.fillRect(barX + 2, barY + 2, barWidth - 4, 8);
+    ctx.fillStyle = "#ff4d6d";
+    ctx.fillRect(barX + 2, barY + 2, (barWidth - 4) * Math.max(0, boss.hp / boss.maxHp), 8);
+    drawPixelText(ctx, boss.variant === "ninja" ? "NINJA MASTER" : "BROADCAST WARDEN", barX, barY - 5, "#fff3b0");
+    drawPixelText(ctx, boss.variant === "ninja" ? (boss.restTime ?? 0) > 0 ? "REST MODE" : "SHADOW ASSAULT" : phase!.name.toUpperCase(), barX + barWidth, barY - 5, boss.variant === "ninja" ? "#a78bfa" : "#ff8fab", "right");
+  }
+
+  if (game.bossAwakenTime > 0) {
+    const progress = 1 - game.bossAwakenTime / 2.6;
+    ctx.fillStyle = "rgba(5,7,6,.82)";
+    ctx.fillRect(176, 204, 416, 82);
+    ctx.strokeStyle = "#f4d35e";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(184, 212, 400, 66);
+    drawPixelText(ctx, "FINAL SIGNAL ACCEPTED", WIDTH / 2, 234, "#fff3b0", "center");
+    drawPixelText(ctx, game.floorNumber === 2 ? "SHADOW SEAL // BREAKING" : "WARDEN CORE // POWERING", WIDTH / 2, 254, game.floorNumber === 2 ? "#a78bfa" : "#ff8fab", "center");
+    ctx.fillStyle = "#3a2d14";
+    ctx.fillRect(256, 264, 256, 5);
+    ctx.fillStyle = "#f4d35e";
+    ctx.fillRect(256, 264, 256 * Math.max(0, Math.min(1, progress)), 5);
+  } else if (game.bossIntroTime > 0) {
+    drawBossVersusSplash(ctx, game);
+  }
+
+  if (game.bossPhaseFx > 0) {
+    const alpha = Math.min(.36, game.bossPhaseFx * .3);
+    ctx.fillStyle = `rgba(255,77,109,${alpha})`;
+    ctx.fillRect(128, 0, 512, HEIGHT);
+    drawPixelText(ctx, `PHASE SHIFT // ${game.bossPhaseName}`, WIDTH / 2, HEIGHT / 2, "#ffffff", "center");
+  }
+
   if (game.screen === "paused") {
     ctx.fillStyle = "rgba(4,6,6,.78)";
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
@@ -1519,16 +2303,55 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game) {
   }
 }
 
-function updateGame(game: Game, keys: Set<string>, dt: number) {
+function indexLivingEnemies(enemies: Enemy[], playerRoomIndex: number) {
+  const livingByHomeRoom = new Map<number, number>();
+  const summonsByOwner = new Map<number, number>();
+  const ninjasByHomeRoom = new Map<number, number>();
+  const inPlayerRoom: Enemy[] = [];
+
+  for (const enemy of enemies) {
+    if (enemy.hp <= 0) continue;
+    livingByHomeRoom.set(enemy.homeRoomIndex, (livingByHomeRoom.get(enemy.homeRoomIndex) ?? 0) + 1);
+    if (enemy.summonerId !== undefined) summonsByOwner.set(enemy.summonerId, (summonsByOwner.get(enemy.summonerId) ?? 0) + 1);
+    if (enemy.kind === "ninja") ninjasByHomeRoom.set(enemy.homeRoomIndex, (ninjasByHomeRoom.get(enemy.homeRoomIndex) ?? 0) + 1);
+    if (roomIndexFor(enemy.x, enemy.y) === playerRoomIndex) inPlayerRoom.push(enemy);
+  }
+
+  return { livingByHomeRoom, summonsByOwner, ninjasByHomeRoom, inPlayerRoom };
+}
+
+function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: ControlMode) {
   if (game.screen !== "playing") return;
   game.elapsed += dt;
+  game.roomClearFx = Math.max(0, game.roomClearFx - dt);
   game.shake = Math.max(0, game.shake - dt);
   if (game.hitStop > 0) {
     game.hitStop = Math.max(0, game.hitStop - dt);
     return;
   }
-  game.time = Math.max(0, game.time - dt);
+  if (game.testerMode) applyTesterLoadout(game);
   game.messageTime = Math.max(0, game.messageTime - dt);
+  if (game.bossAwakenTime > 0) {
+    game.bossAwakenTime = Math.max(0, game.bossAwakenTime - dt);
+    game.shake = Math.max(game.shake, .08);
+    if (game.bossAwakenTime === 0) setMessage(game, game.floorNumber === 2 ? "SHADOW SEAL BROKEN // BOSS GATE RELEASED" : "WARDEN CORE ONLINE // BOSS GATE RELEASED");
+  }
+  if (game.bossIntroTime > 0) {
+    game.bossIntroTime = Math.max(0, game.bossIntroTime - dt);
+    game.shake = Math.max(game.shake, game.bossIntroTime > BOSS_VERSUS_DURATION - .38 ? .24 : .04);
+    if (game.bossIntroTime === 0) {
+      game.bossEngaged = true;
+      const boss = game.enemies.find((enemy) => enemy.kind === "boss");
+      if (boss?.variant === "ninja") {
+        summonSignalNinjas(game, boss);
+        setMessage(game, "NINJA MASTER LIVE // KEEP ONE ASSASSIN ALIVE");
+      } else setMessage(game, "WARDEN LIVE // SURVIVE THE BROADCAST");
+      if (boss) burst(game, boss.x, boss.y, boss.variant === "ninja" ? "#a78bfa" : "#ff8fab", 24, 145);
+    }
+    return;
+  }
+  game.time = Math.max(0, game.time - dt);
+  game.bossPhaseFx = Math.max(0, game.bossPhaseFx - dt);
   const p = game.player;
   p.attackCd = Math.max(0, p.attackCd - dt);
   p.attackFx = Math.max(0, p.attackFx - dt);
@@ -1554,6 +2377,10 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     particle.vx *= .93;
     particle.vy *= .93;
     return particle.life > 0;
+  });
+  game.combatText = game.combatText.filter((popup) => {
+    popup.life -= dt;
+    return popup.life > 0;
   });
   game.chests.forEach((chest) => { chest.openFx = Math.max(0, chest.openFx - dt); });
 
@@ -1592,25 +2419,41 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     const len = Math.hypot(mx, my);
     mx /= len;
     my /= len;
-    p.dirX = mx;
-    p.dirY = my;
+    if (controlMode === "keyboard") {
+      p.dirX = mx;
+      p.dirY = my;
+    }
   }
   p.moving = Boolean(mx || my);
   const equipmentSpeed = hasEquipment(game, "runner-boots") ? 1.1 : 1;
-  moveEntity(p, mx * p.speed * equipmentSpeed, my * p.speed * equipmentSpeed, dt, 9);
+  movePlayer(game, mx * p.speed * equipmentSpeed, my * p.speed * equipmentSpeed, dt, 9);
   if (p.moving && p.stepTimer <= 0) {
     p.stepTimer = .13;
     burst(game, p.x - p.dirX * 7, p.y - p.dirY * 7 + 10, "#607068", 2, 24);
   }
 
-  let currentRoomIndex = roomIndexFor(p.x, p.y);
+  const currentRoomIndex = roomIndexFor(p.x, p.y);
   const activePylonCount = game.pylons.filter((pylon) => pylon.active).length;
+  const currentRoomKind = game.roomKinds[currentRoomIndex];
   if (currentRoomIndex !== game.currentRoomIndex) {
     game.currentRoomIndex = currentRoomIndex;
     game.roomStarted[currentRoomIndex] = true;
-    const kind = game.roomKinds[currentRoomIndex];
-    if (kind === "boss" && activePylonCount < 3) setMessage(game, `WARDEN DORMANT // ${3 - activePylonCount} SIGNAL${3 - activePylonCount === 1 ? "" : "S"} MISSING — EXIT REMAINS OPEN`);
-    else setMessage(game, `${kind.toUpperCase()} ENCOUNTER // ${encounterLocks(kind) ? "DOORS LOCKING" : "SIGNAL ACQUIRED"}`);
+    if (currentRoomKind === "boss" && bossGateOpen(game)) {
+      const boss = game.enemies.find((enemy) => enemy.kind === "boss");
+      game.bossEngaged = false;
+      game.bossIntroTime = BOSS_VERSUS_DURATION;
+      if (boss) {
+        const phase = bossPhaseForHealth(boss.hp, boss.maxHp);
+        game.lastBossPhase = phase.id;
+        game.bossPhaseName = phase.name.toUpperCase();
+        boss.cooldown = Math.max(boss.cooldown, 2.2);
+        burst(game, boss.x, boss.y, boss.variant === "ninja" ? "#a78bfa" : "#ff4d6d", 36, 170);
+      }
+      game.shake = .55;
+      setMessage(game, boss?.variant === "ninja" ? "SHADOW NETWORK LIVE // THE NINJA MASTER" : "LIVE FROM THE DEPTHS // THE BROADCAST WARDEN");
+    } else if (currentRoomKind === "boss") {
+      setMessage(game, `${game.floorNumber === 2 ? "NINJA MASTER SEALED" : "WARDEN DORMANT"} // ${game.pylons.length - activePylonCount} SIGNAL${game.pylons.length - activePylonCount === 1 ? "" : "S"} MISSING`);
+    } else setMessage(game, `${currentRoomKind.toUpperCase()} ENCOUNTER // ${encounterLocks(currentRoomKind) ? "DOORS LOCKING" : "SIGNAL ACQUIRED"}`);
   }
   const roomId = String(currentRoomIndex);
   if (!game.explored.has(roomId)) {
@@ -1618,10 +2461,36 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     game.score += 120;
     game.hype += 3;
     game.maxHype = Math.max(game.maxHype, game.hype);
-    setMessage(game, `NEW SIGNAL ZONE // ROOM ${game.explored.size} OF ${ROOM_COLS * ROOM_ROWS}`);
+    if (currentRoomKind === "boss" && (game.bossEngaged || game.bossIntroTime > 0)) setMessage(game, game.floorNumber === 2 ? "SHADOW NETWORK LIVE // THE NINJA MASTER" : "LIVE FROM THE DEPTHS // THE BROADCAST WARDEN");
+    else setMessage(game, `NEW SIGNAL ZONE // ROOM ${game.explored.size} OF ${ROOM_COLS * ROOM_ROWS}`);
   }
 
   game.roomTimers[currentRoomIndex] += dt;
+  if (currentRoomKind === "maze") updateMazeRoom(game, currentRoomIndex);
+  const currentHazardTiles = currentRoomKind === "maze" ? [] : hazardTilesForRoom(currentRoomIndex, ROOM_COLS, ROOM_COLS * ROOM_ROWS);
+  if (
+    hazardStateAt(game.elapsed, currentRoomIndex) === "active" &&
+    pointIsOnHazard(p.x, p.y, currentHazardTiles, TILE) &&
+    p.invuln <= 0
+  ) {
+    hurtPlayer(game, 9, "Floor surge");
+    p.invuln = .75;
+    game.shake = Math.max(game.shake, .16);
+    game.combatText.push({ x: p.x, y: p.y - 25, text: "SURGE -9", life: .65, maxLife: .65, color: "#ff8fab", scale: 1 });
+    burst(game, p.x, p.y, "#ff8fab", 10, 95);
+  }
+  game.burrowHazards = game.burrowHazards.filter((hazard) => {
+    hazard.life -= dt;
+    hazard.tick -= dt;
+    if (hazard.life > 0 && roomIndexFor(hazard.x, hazard.y) === currentRoomIndex && dist(hazard, p) < 34 && hazard.tick <= 0 && p.invuln <= 0) {
+      hurtPlayer(game, 7, "Burrower scrap field");
+      p.invuln = .68;
+      hazard.tick = .7;
+      game.combatText.push({ x: p.x, y: p.y - 25, text: "SCRAP -7", life: .62, maxLife: .62, color: "#ffad42", scale: 1 });
+      burst(game, p.x, p.y, "#ffad42", 8, 75);
+    }
+    return hazard.life > 0;
+  });
   if (isRoomLocked(game, currentRoomIndex)) {
     const room = roomFor(p.x, p.y);
     const inset = 17;
@@ -1645,32 +2514,154 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
 
   const activePylons = game.pylons.filter((pylon) => pylon.active).length;
   const playerRoom = roomFor(p.x, p.y);
+  const enemyIndex = indexLivingEnemies(game.enemies, currentRoomIndex);
   game.enemies.forEach((enemy) => {
+    if (enemy.burrowPhase !== "underground" && enemy.burrowPhase !== "erupting") recoverEmbeddedEntity(enemy, enemy.kind === "boss" ? 17 : 11);
     enemy.cooldown -= dt;
     enemy.flash = Math.max(0, enemy.flash - dt);
     enemy.recovery = Math.max(0, enemy.recovery - dt);
+    enemy.shieldTime = Math.max(0, (enemy.shieldTime ?? 0) - dt);
     const enemyRoom = roomFor(enemy.x, enemy.y);
     const enemyRoomIndex = enemyRoom.row * ROOM_COLS + enemyRoom.col;
     const sharesPlayerRoom = enemyRoom.col === playerRoom.col && enemyRoom.row === playerRoom.row;
     if (!sharesPlayerRoom && !game.roomStarted[enemyRoomIndex]) return;
     if (sharesPlayerRoom && !game.discoveredEnemies.includes(enemy.kind)) game.discoveredEnemies.push(enemy.kind);
-    if (enemy.kind === "boss" && activePylons < 3) return;
-    const chaseTarget = chaseWaypoint(enemy, p);
+    if (enemy.kind === "boss" && (activePylons < game.pylons.length || !game.bossEngaged)) return;
+    const navigationGoal = sharesPlayerRoom ? enemyApproachTarget(enemy, p) : p;
+    const chaseTarget = chaseWaypoint(enemy, navigationGoal);
     const dx = chaseTarget.x - enemy.x;
     const dy = chaseTarget.y - enemy.y;
-    const distance = Math.hypot(dx, dy);
-    if (sharesPlayerRoom && distance > 235) return;
-    const nx = dx / Math.max(1, distance);
-    const ny = dy / Math.max(1, distance);
+    const navigationDistance = Math.hypot(dx, dy);
+    const distance = dist(enemy, p);
+    const nx = dx / Math.max(1, navigationDistance);
+    const ny = dy / Math.max(1, navigationDistance);
+    if (enemy.kind === "burrower" && enemy.burrowPhase) {
+      enemy.phaseTime = Math.max(0, (enemy.phaseTime ?? 0) - dt);
+      if (enemy.burrowPhase === "digging") {
+        if ((enemy.phaseTime ?? 0) <= 0) {
+          enemy.burrowPhase = "underground";
+          enemy.phaseTime = .8;
+          burst(game, enemy.x, enemy.y, "#ffad42", 10, 75);
+        }
+        return;
+      }
+      if (enemy.burrowPhase === "underground") {
+        const targetX = enemy.targetX ?? enemy.x;
+        const targetY = enemy.targetY ?? enemy.y;
+        const travelX = targetX - enemy.x;
+        const travelY = targetY - enemy.y;
+        const travelLength = Math.max(1, Math.hypot(travelX, travelY));
+        const room = roomFor(enemy.x, enemy.y);
+        const inset = 24;
+        enemy.x = Math.max(room.col * 8 * TILE + inset, Math.min((room.col + 1) * 8 * TILE - inset, enemy.x + (travelX / travelLength) * 175 * dt));
+        enemy.y = Math.max(room.row * 8 * TILE + inset, Math.min((room.row + 1) * 8 * TILE - inset, enemy.y + (travelY / travelLength) * 175 * dt));
+        if ((enemy.phaseTime ?? 0) <= 0 || travelLength < 6) {
+          enemy.x = targetX;
+          enemy.y = targetY;
+          enemy.burrowPhase = "erupting";
+          enemy.phaseTime = .58;
+        }
+        return;
+      }
+      if ((enemy.phaseTime ?? 0) <= 0) {
+        if (dist(enemy, p) < 48 && p.invuln <= 0) {
+          hurtPlayer(game, enemy.damage, "Scrap Burrower eruption");
+          p.invuln = .72;
+        }
+        game.burrowHazards.push({ x: enemy.x, y: enemy.y, life: 2.6, tick: .15 });
+        burst(game, enemy.x, enemy.y, "#ff6b35", 24, 165);
+        game.shake = Math.max(game.shake, .24);
+        enemy.burrowPhase = undefined;
+        enemy.phaseTime = 0;
+        enemy.cooldown = 3.2;
+        enemy.recovery = .7;
+      }
+      return;
+    }
     if (enemy.recovery > 0) return;
+    if (sharesPlayerRoom) {
+      const clearanceTarget = doorwayClearanceTarget(enemy);
+      if (clearanceTarget) {
+        const clearanceX = clearanceTarget.x - enemy.x;
+        const clearanceY = clearanceTarget.y - enemy.y;
+        const clearanceDistance = Math.max(1, Math.hypot(clearanceX, clearanceY));
+        moveEntity(enemy, (clearanceX / clearanceDistance) * Math.max(58, enemy.speed), (clearanceY / clearanceDistance) * Math.max(58, enemy.speed), dt, enemy.kind === "boss" ? 17 : 11);
+        return;
+      }
+    }
     if (!sharesPlayerRoom) {
+      if (doorwayQueueBlocked(enemy, p, game.enemies)) return;
       moveEntity(enemy, nx * enemy.speed, ny * enemy.speed, dt, enemy.kind === "boss" ? 17 : 11);
       return;
     }
+    if (enemy.kind === "broadcaster") {
+      if (enemy.windup > 0) {
+        enemy.windup -= dt;
+        if (enemy.windup <= 0) {
+          const roomPopulation = enemyIndex.livingByHomeRoom.get(enemy.homeRoomIndex) ?? 0;
+          if (roomPopulation < 7) summonBroadcasterHusks(game, enemy);
+          enemy.castStartHp = undefined;
+          enemy.cooldown = 5.4;
+          enemy.recovery = .5;
+          burst(game, enemy.x, enemy.y, "#ff4d9a", 18, 125);
+        }
+        return;
+      }
+      if (distance < 105) moveEntity(enemy, -nx * enemy.speed, -ny * enemy.speed, dt, 11);
+      else if (distance > 170) moveEntity(enemy, nx * enemy.speed, ny * enemy.speed, dt, 11);
+      const activeHusks = enemyIndex.summonsByOwner.get(enemy.id) ?? 0;
+      if (enemy.cooldown <= 0 && activeHusks < 3) {
+        enemy.windup = 1.4;
+        enemy.castStartHp = enemy.hp;
+      }
+      return;
+    }
+    if (enemy.kind === "bulwark") {
+      const allies = enemyIndex.inPlayerRoom.filter((candidate) => candidate.id !== enemy.id);
+      if (enemy.windup > 0) {
+        enemy.windup -= dt;
+        if (enemy.windup <= 0) {
+          enemy.shieldTime = 2.5;
+          enemy.shieldDirX = nx;
+          enemy.shieldDirY = ny;
+          enemy.cooldown = 4.5;
+          burst(game, enemy.x, enemy.y, "#76c7dc", 14, 90);
+        }
+        return;
+      }
+      const localX = ((enemy.x % (8 * TILE)) + 8 * TILE) % (8 * TILE);
+      const localY = ((enemy.y % (8 * TILE)) + 8 * TILE) % (8 * TILE);
+      const clearOfDoor = localX > 48 && localX < 8 * TILE - 48 && localY > 48 && localY < 8 * TILE - 48;
+      if (enemy.cooldown <= 0 && allies.length && clearOfDoor) {
+        enemy.windup = .55;
+        return;
+      }
+      if (distance < 82) moveEntity(enemy, -nx * enemy.speed, -ny * enemy.speed, dt, 11);
+      else if (allies[0] && dist(enemy, allies[0]) > 64) {
+        const allyDistance = Math.max(1, dist(enemy, allies[0]));
+        moveEntity(enemy, ((allies[0].x - enemy.x) / allyDistance) * enemy.speed, ((allies[0].y - enemy.y) / allyDistance) * enemy.speed, dt, 11);
+      }
+      return;
+    }
+    if (enemy.kind === "burrower" && enemy.cooldown <= 0 && distance > 52 && distance < 185) {
+      const room = roomFor(enemy.x, enemy.y);
+      const inset = 28;
+      enemy.targetX = Math.max(room.col * 8 * TILE + inset, Math.min((room.col + 1) * 8 * TILE - inset, p.x + p.dirX * 18));
+      enemy.targetY = Math.max(room.row * 8 * TILE + inset, Math.min((room.row + 1) * 8 * TILE - inset, p.y + p.dirY * 18));
+      if (!canMove(enemy.targetX, enemy.targetY, 11)) {
+        enemy.targetX = p.x;
+        enemy.targetY = p.y;
+      }
+      enemy.burrowPhase = "digging";
+      enemy.phaseTime = .62;
+      return;
+    }
     if (enemy.kind === "healer") {
-      const ally = game.enemies
-        .filter((candidate) => candidate.id !== enemy.id && roomIndexFor(candidate.x, candidate.y) === currentRoomIndex && candidate.hp < candidate.maxHp)
-        .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
+      let ally: Enemy | undefined;
+      for (const candidate of enemyIndex.inPlayerRoom) {
+        if (candidate.id === enemy.id || candidate.hp >= candidate.maxHp) continue;
+        if (!ally || candidate.hp / candidate.maxHp < ally.hp / ally.maxHp) ally = candidate;
+      }
       if (distance < 90) moveEntity(enemy, -nx * enemy.speed, -ny * enemy.speed, dt, 11);
       else if (ally) {
         const adx = ally.x - enemy.x;
@@ -1696,7 +2687,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
             p.invuln = .7;
           }
           game.enemies.forEach((other) => {
-            if (other.id !== enemy.id && dist(other, enemy) < 70) other.hp -= 25;
+            if (other.id !== enemy.id && dist(other, enemy) < 70) damageEnemy(game, other, 25);
           });
           enemy.hp = 0;
         }
@@ -1729,19 +2720,52 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
         enemy.windup = .5;
       }
     } else {
-      if (enemy.kind === "boss") {
+      if (enemy.kind === "boss" && enemy.variant === "ninja") {
+        const livingNinjas = enemyIndex.ninjasByHomeRoom.get(enemy.homeRoomIndex) ?? 0;
+        if ((enemy.restTime ?? 0) > 0) {
+          enemy.restTime = Math.max(0, (enemy.restTime ?? 0) - dt);
+          if (enemy.cooldown <= 0) {
+            const starCount = 3;
+            for (let index = 0; index < starCount; index++) {
+              const angle = (index / starCount) * Math.PI * 2 + game.elapsed * .42;
+              game.projectiles.push({ x: enemy.x, y: enemy.y, vx: Math.cos(angle) * 95, vy: Math.sin(angle) * 95, life: 5.5, damage: 10, owner: "enemy", kind: "shuriken", behavior: "bounce", bounces: 7 });
+            }
+            enemy.cooldown = 1.25;
+            burst(game, enemy.x, enemy.y, "#dcd3ff", 10, 85);
+          }
+          if ((enemy.restTime ?? 0) <= 0) {
+            game.projectiles = game.projectiles.filter((shot) => shot.kind !== "shuriken");
+            summonSignalNinjas(game, enemy);
+            enemy.cooldown = 1.2;
+            setMessage(game, "NINJA WAVE // MASTER VULNERABLE");
+          }
+          return;
+        }
+        if (livingNinjas === 0) {
+          enemy.restTime = 4.5;
+          enemy.cooldown = 0;
+          enemy.windup = 0;
+          setMessage(game, "NINJA REST MODE // INVINCIBLE SHURIKEN STORM");
+          return;
+        }
+      }
+      if (enemy.kind === "boss" && enemy.variant !== "ninja") {
         const phase = bossPhaseForHealth(enemy.hp, enemy.maxHp);
         if (phase.id !== game.lastBossPhase) {
           game.lastBossPhase = phase.id;
+          game.bossPhaseName = phase.name.toUpperCase();
+          game.bossPhaseFx = 1.35;
           setMessage(game, `BOSS PHASE // ${phase.name.toUpperCase()}`);
-          game.shake = .35;
+          game.shake = .62;
+          game.hitStop = .12;
+          burst(game, enemy.x, enemy.y, phase.id === "warden_dead_air" ? "#ffffff" : "#ff4d6d", 42, 210);
         }
       }
       const reach = enemy.kind === "boss" ? 34 : enemy.kind === "mimic" ? 28 : 24;
       if (enemy.windup > 0) {
         enemy.windup -= dt;
         if (enemy.windup <= 0 && distance < reach + 12 && p.invuln <= 0) {
-          hurtPlayer(game, enemy.damage, enemy.kind === "boss" ? "Broadcast Warden" : enemy.kind === "warden" ? "Ironjaw strike" : enemy.kind === "mimic" ? "Mimic bite" : "Skitter slash");
+          hurtPlayer(game, enemy.damage, enemy.kind === "boss" ? enemy.variant === "ninja" ? "Ninja Master strike" : "Broadcast Warden" : enemy.kind === "ninja" ? "Signal Ninja slash" : enemy.kind === "warden" ? "Ironjaw strike" : enemy.kind === "mimic" ? "Mimic bite" : "Skitter slash");
           p.invuln = .65;
           game.shake = enemy.kind === "boss" ? .3 : .16;
           burst(game, p.x, p.y, "#ff8fab", enemy.kind === "boss" ? 12 : 7, 110);
@@ -1756,7 +2780,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
         enemy.cooldown = enemy.kind === "boss" ? 1.05 : 1.25;
         return;
       }
-      if (enemy.kind === "boss" && enemy.cooldown <= .05 && Math.random() < .06) {
+      if (enemy.kind === "boss" && enemy.variant !== "ninja" && enemy.cooldown <= .05 && Math.random() < .06) {
         const phase = bossPhaseForHealth(enemy.hp, enemy.maxHp);
         const count = phase.id === "warden_dead_air" ? 12 : phase.id === "warden_overload" ? 10 : 8;
         for (let i = 0; i < count; i++) {
@@ -1772,6 +2796,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
   game.enemies.forEach((enemy) => {
     if (enemy.hp > 0 && roomIndexFor(enemy.x, enemy.y) === currentRoomIndex) separateEnemyFromPlayer(game, enemy);
   });
+  separateEnemies(game);
   game.enemies = game.enemies.filter((enemy) => enemy.hp > 0);
 
   game.projectiles = game.projectiles.filter((shot) => {
@@ -1788,29 +2813,32 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
       } else return false;
     }
     if (shot.owner === "player") {
-      const target = game.enemies.find((enemy) => dist(shot, enemy) < 15);
+      const target = game.enemies.find((enemy) => enemyIsTargetable(enemy) && dist(shot, enemy) < 15);
       if (target) {
+        if (target.kind === "boss" && !game.bossEngaged) return true;
         let damage = shot.damage;
         if ((shot.behavior === "precision" || shot.kind === "power-arrow") && (shot.traveled ?? 0) > 140) damage *= 1.25;
         if (shot.behavior === "longshot" && (shot.traveled ?? 0) > 150) damage *= 1.55;
         if (shot.behavior === "longshot" && (shot.traveled ?? 0) < 70) damage *= .7;
         if ((shot.behavior === "precision" || shot.behavior === "longshot") && (shot.traveled ?? 0) < 55) damage *= .85;
-        target.hp -= damage;
+        damage = damageEnemy(game, target, damage);
+        showDamage(game, target, damage, shot.kind === "power-arrow", colorForProjectile(shot));
         if (game.player.classId === "knight") game.weaponHits[shot.weaponId ?? game.player.weaponId]++;
         target.flash = .14;
-        const color = shot.arsenalId ? CLASS_ARSENAL[shot.arsenalId].color : shot.kind === "arc-bolt" ? "#a78bfa" : shot.kind === "arrow" || shot.kind === "power-arrow" ? "#34d399" : "#f4d35e";
+        const color = colorForProjectile(shot);
         burst(game, target.x, target.y, color, shot.kind === "power-arrow" ? 14 : 8, shot.kind === "power-arrow" ? 145 : 100);
         if (shot.behavior === "frost") target.recovery = Math.max(target.recovery, target.kind === "boss" ? .18 : .52);
         if (shot.behavior === "chain") {
-          game.enemies.filter((enemy) => enemy.id !== target.id && dist(enemy, target) < 72).slice(0, 2).forEach((enemy) => { enemy.hp -= shot.damage * .62; enemy.flash = .14; burst(game, enemy.x, enemy.y, "#d9f7ff", 7, 80); });
+          game.enemies.filter((enemy) => enemy.id !== target.id && enemyIsTargetable(enemy) && dist(enemy, target) < 72).slice(0, 2).forEach((enemy) => { const chainDamage = damageEnemy(game, enemy, shot.damage * .62); showDamage(game, enemy, chainDamage, false, "#d9f7ff"); enemy.flash = .14; burst(game, enemy.x, enemy.y, "#d9f7ff", 7, 80); });
         }
         if (shot.splash && shot.splashDamage) {
-          game.enemies.filter((enemy) => enemy.id !== target.id && dist(enemy, target) < shot.splash!).forEach((enemy) => {
-            enemy.hp -= shot.splashDamage!;
+          game.enemies.filter((enemy) => enemy.id !== target.id && enemyIsTargetable(enemy) && dist(enemy, target) < shot.splash!).forEach((enemy) => {
+            const splashDamage = damageEnemy(game, enemy, shot.splashDamage!);
+            showDamage(game, enemy, splashDamage, false, color);
             enemy.flash = .14;
             if (shot.behavior === "pull" && enemy.kind !== "boss") {
               const dx = target.x - enemy.x; const dy = target.y - enemy.y; const length = Math.max(1, Math.hypot(dx, dy));
-              enemy.x += (dx / length) * 20; enemy.y += (dy / length) * 20;
+              displaceEntity(enemy, (dx / length) * 20, (dy / length) * 20, 11);
             }
             burst(game, enemy.x, enemy.y, color, 6, 70);
           });
@@ -1851,6 +2879,8 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
   if (encounterKind === "boss") encounterComplete = game.bossDead;
   if (encounterComplete && !game.roomCleared[encounterIndex]) {
     game.roomCleared[encounterIndex] = true;
+    game.roomClearFx = 1.65;
+    game.roomClearRoomIndex = encounterIndex;
     game.roomsCleared++;
     game.score += encounterKind === "boss" ? 1800 : encounterKind === "elite" ? 650 : 320;
     game.hype += encounterKind === "elite" ? 12 : 7;
@@ -1879,7 +2909,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number) {
     }
   }
 
-  if (game.time <= 0 || p.hp <= 0) {
+  if (!game.testerMode && (game.time <= 0 || p.hp <= 0)) {
     p.hp = Math.max(0, p.hp);
     if (p.hp <= 0 && game.deathRoomKind === null) game.deathRoomKind = game.roomKinds[currentRoomIndex];
     game.screen = "lost";
@@ -1901,7 +2931,7 @@ function makeHud(game: Game): Hud {
     classResource: Math.ceil(game.player.classId === "knight" ? game.player.stamina : game.player.classResource),
     classResourceMax: playerClass.resourceMax,
     time: Math.ceil(game.time),
-    score: Math.floor(game.score),
+    score: Math.floor(game.score * game.scoreMultiplier),
     hype: game.hype,
     rooms: game.explored.size,
     pylons,
@@ -1919,7 +2949,7 @@ function makeHud(game: Game): Hud {
     dareProgress: game.dareProgress,
     dareTarget: dare.target,
     message: game.messageTime > 0 ? game.message : "THE SIGNAL HUMS. KEEP MOVING.",
-    objective: pylons < 3 ? `Activate ${3 - pylons} signal pylon${3 - pylons === 1 ? "" : "s"}` : game.bossDead ? "Reach the exit gate" : "Defeat the Broadcast Warden",
+    objective: pylons < 3 ? `Activate ${3 - pylons} signal pylon${3 - pylons === 1 ? "" : "s"}` : game.bossDead ? "Reach the exit gate" : game.floorNumber === 2 ? "Defeat the Ninja Master" : "Defeat the Broadcast Warden",
   };
 }
 
@@ -1933,7 +2963,7 @@ function runStatsFor(game: Game): RunStats {
     roomsCleared: game.roomsCleared,
     enemiesDefeated: game.kills,
     elitesDefeated,
-    bossesDefeated: game.bossDead ? 1 : 0,
+    bossesDefeated: game.bossDead ? game.floorNumber : Math.max(0, game.floorNumber - 1),
     damageTaken: Math.round(game.damageTaken),
     deaths: game.screen === "lost" && game.player.hp <= 0 ? 1 : 0,
     highestHype: Math.round(game.maxHype),
@@ -1952,8 +2982,9 @@ export default function Home() {
   const audioRef = useRef<AudioContext | null>(null);
   const interactHoldTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shiftUsedForHeavy = useRef(false);
+  const mouseAttackHeld = useRef(false);
   const [screen, setScreen] = useState<Screen>("title");
-  const [hud, setHud] = useState<Hud>(() => makeHud(gameRef.current));
+  const [hud, setHud] = useState<Hud>(initialHud);
   const [highScore, setHighScore] = useState(0);
   const [helpOpen, setHelpOpen] = useState(false);
   const [helpSection, setHelpSection] = useState<HelpSection>("mission");
@@ -1961,6 +2992,13 @@ export default function Home() {
   const [armory, setArmory] = useState<ArmorySnapshot>(EMPTY_ARMORY);
   const [starterWeapon, setStarterWeapon] = useState<WeaponId>("cleaver");
   const [selectedClass, setSelectedClass] = useState<PlayerClassId>("knight");
+  const [selectedContract, setSelectedContract] = useState<BroadcastContractId>("redline");
+  const [controlMode, setControlMode] = useState<ControlMode>("keyboard");
+  const controlModeRef = useRef<ControlMode>("keyboard");
+  const [comfortSettings, setComfortSettings] = useState<ComfortSettings>(DEFAULT_COMFORT_SETTINGS);
+  const comfortSettingsRef = useRef<ComfortSettings>(DEFAULT_COMFORT_SETTINGS);
+  const [testerMode, setTesterMode] = useState(false);
+  const testerModeRef = useRef(false);
   const helpPreviousScreen = useRef<Screen | null>(null);
 
   const beep = useCallback((frequency = 220, duration = 0.06) => {
@@ -1973,7 +3011,9 @@ export default function Home() {
       const gain = audio.createGain();
       oscillator.type = "square";
       oscillator.frequency.value = frequency;
-      gain.gain.setValueAtTime(0.035, audio.currentTime);
+      const volume = comfortSettingsRef.current.effectsVolume;
+      if (volume <= 0) return;
+      gain.gain.setValueAtTime(0.035 * volume, audio.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + duration);
       oscillator.connect(gain).connect(audio.destination);
       oscillator.start();
@@ -2010,17 +3050,49 @@ export default function Home() {
     setHud(makeHud(game));
     if (game.screen === "won" || game.screen === "lost") {
       const saved = Number(localStorage.getItem("signal-depths-high-score") || 0);
-      if (game.score > saved) {
-        localStorage.setItem("signal-depths-high-score", String(Math.floor(game.score)));
-        setHighScore(Math.floor(game.score));
+      const contractScore = Math.floor(game.score * game.scoreMultiplier);
+      if (contractScore > saved) {
+        localStorage.setItem("signal-depths-high-score", String(contractScore));
+        setHighScore(contractScore);
       }
     }
   }, []);
 
+  const chooseControlMode = useCallback((mode: ControlMode) => {
+    controlModeRef.current = mode;
+    mouseAttackHeld.current = false;
+    setControlMode(mode);
+    localStorage.setItem("signal-depths-control-mode", mode);
+    keysRef.current.clear();
+    beep(mode === "mouse" ? 620 : 360, .07);
+  }, [beep]);
+
+  const updateComfortSetting = useCallback(<K extends keyof ComfortSettings>(key: K, value: ComfortSettings[K]) => {
+    const next = { ...comfortSettingsRef.current, [key]: value };
+    if (key === "holdToAttack" && value === false) mouseAttackHeld.current = false;
+    comfortSettingsRef.current = next;
+    setComfortSettings(next);
+    localStorage.setItem("signal-depths-comfort-settings", JSON.stringify(next));
+  }, []);
+
+  const chooseTesterMode = useCallback((enabled: boolean) => {
+    testerModeRef.current = enabled;
+    setTesterMode(enabled);
+    localStorage.setItem("signal-depths-tester-mode", String(enabled));
+    const game = gameRef.current;
+    game.testerMode = enabled;
+    if (enabled) applyTesterLoadout(game);
+    setMessage(game, enabled ? "TESTER MODE ONLINE // LIMITERS REMOVED" : "TESTER MODE OFFLINE // STANDARD RULES RESTORED");
+    setHud(makeHud(game));
+    beep(enabled ? 920 : 240, .1);
+  }, [beep]);
+
   const startGame = useCallback(() => {
-    const nextGame = makeGame("playing", Math.floor(Math.random() * 1_000_000_000), selectedClass);
+    const nextGame = makeGame("playing", Math.floor(Math.random() * 1_000_000_000), selectedClass, selectedContract);
     nextGame.player.weaponId = starterWeapon;
     nextGame.player.ammo = getWeapon(starterWeapon).ammo ?? 0;
+    nextGame.testerMode = testerModeRef.current;
+    if (nextGame.testerMode) applyTesterLoadout(nextGame);
     gameRef.current = nextGame;
     keysRef.current.clear();
     setScreen("playing");
@@ -2028,7 +3100,8 @@ export default function Home() {
     beep(164, 0.1);
     canvasRef.current?.focus();
     localStorage.setItem("signal-depths-player-class", selectedClass);
-  }, [beep, selectedClass, starterWeapon]);
+    localStorage.setItem("signal-depths-broadcast-contract", selectedContract);
+  }, [beep, selectedClass, selectedContract, starterWeapon]);
 
   const openClassSelection = useCallback(() => {
     gameRef.current.screen = "class-select";
@@ -2082,10 +3155,11 @@ export default function Home() {
     const game = gameRef.current;
     if (game.screen !== "playing") return;
     const p = game.player;
-    if (p.attackCd > 0) return;
+    if (!game.testerMode && p.attackCd > 0) return;
+    if (controlModeRef.current === "keyboard" && comfortSettingsRef.current.keyboardAimAssist) applyKeyboardAimAssist(game);
     if (p.classId === "mage") {
       const focus = CLASS_ARSENAL[p.classArsenalId];
-      p.attackCd = focus.cooldown;
+      p.attackCd = game.testerMode ? 0 : focus.cooldown;
       p.attackFx = .24;
       const baseAngle = Math.atan2(p.dirY, p.dirX);
       for (let index = 0; index < focus.shots; index++) {
@@ -2099,16 +3173,16 @@ export default function Home() {
     }
     if (p.classId === "archer") {
       const bow = CLASS_ARSENAL[p.classArsenalId];
-      if (p.reloadTime > 0) { setMessage(game, "RESTRINGING QUIVER // HOLD THE LINE"); return; }
-      if (p.classResource < bow.ammoCost) {
+      if (!game.testerMode && p.reloadTime > 0) { setMessage(game, "RESTRINGING QUIVER // HOLD THE LINE"); return; }
+      if (!game.testerMode && p.classResource < bow.ammoCost) {
         p.reloadTime = .95;
         setMessage(game, "QUIVER EMPTY // RELOADING");
         beep(80, .05);
         return;
       }
-      p.classResource -= bow.ammoCost;
-      if (p.classResource <= 0) p.reloadTime = .95;
-      p.attackCd = bow.cooldown;
+      if (!game.testerMode) p.classResource -= bow.ammoCost;
+      if (!game.testerMode && p.classResource <= 0) p.reloadTime = .95;
+      p.attackCd = game.testerMode ? 0 : bow.cooldown;
       p.attackFx = .2;
       const baseAngle = Math.atan2(p.dirY, p.dirX);
       for (let index = 0; index < bow.shots; index++) {
@@ -2121,18 +3195,18 @@ export default function Home() {
       return;
     }
     const weapon = getWeapon(p.weaponId);
-    if (weapon.ammo !== null && p.ammo <= 0) {
+    if (!game.testerMode && weapon.ammo !== null && p.ammo <= 0) {
       setMessage(game, `${weapon.name.toUpperCase()} // OUT OF AMMO`);
       beep(70, .05);
       return;
     }
     const servoBoost = hasEquipment(game, "razor-servo") && weapon.damageType === "slash" ? .85 : 1;
-    p.attackCd = (weapon.cooldownMs / 1000) * servoBoost;
+    p.attackCd = game.testerMode ? 0 : (weapon.cooldownMs / 1000) * servoBoost;
     p.attackFx = p.weaponId === "hammer" ? .3 : p.weaponId === "spear" ? .24 : .2;
     game.weaponAttacks[p.weaponId]++;
     burst(game, p.x + p.dirX * 24, p.y + p.dirY * 24, "#fff3b0", 3, 42);
     if (weapon.projectile && p.weaponId === "scrap-launcher") {
-      p.ammo--;
+      if (!game.testerMode) p.ammo--;
       game.projectiles.push({ x: p.x + p.dirX * 18, y: p.y + p.dirY * 18, vx: p.dirX * weapon.projectile.speed, vy: p.dirY * weapon.projectile.speed, life: weapon.projectile.lifetimeMs / 1000, damage: weapon.damage * (p.furyTime > 0 ? 1.75 : 1), owner: "player", pierce: weapon.projectile.pierce, weaponId: p.weaponId });
       game.shake = .1;
       beep(130, .09);
@@ -2145,23 +3219,25 @@ export default function Home() {
       const distance = Math.hypot(dx, dy);
       const facing = (dx * p.dirX + dy * p.dirY) / Math.max(1, distance);
       const facingThreshold = Math.cos(weapon.arcRadians / 2);
-      if (distance < weapon.range && facing > facingThreshold) {
-        if (enemy.kind === "boss" && game.pylons.filter((x) => x.active).length < 3) {
-          setMessage(game, "WARDEN SHIELDED // FEED THE THREE SIGNALS");
+      if (enemyIsTargetable(enemy) && distance < weapon.range && facing > facingThreshold) {
+        if (enemy.kind === "boss" && !game.bossEngaged) {
+          setMessage(game, game.bossIntroTime > 0 ? "WARDEN AWAKENING // HOLD FOR THE BROADCAST" : "WARDEN SHIELDED // FEED THE THREE SIGNALS");
           return;
         }
         const hammerArmor = p.weaponId === "hammer" && game.equipped.armor ? 1.1 : 1;
         const kinetic = p.weaponId === "hammer" && hasEquipment(game, "kinetic-brace") ? 1.3 : 1;
-        enemy.hp -= weapon.damage * weapon.attacksPerInput * hammerArmor * kinetic * (p.furyTime > 0 ? 1.75 : 1) * (game.upgrades.filter((id) => id === "razor_arc").length ? 1.1 : 1);
+        const damage = weapon.damage * weapon.attacksPerInput * hammerArmor * kinetic * (p.furyTime > 0 ? 1.75 : 1) * (game.upgrades.filter((id) => id === "razor_arc").length ? 1.1 : 1);
+        const appliedDamage = damageEnemy(game, enemy, damage);
+        showDamage(game, enemy, appliedDamage, p.weaponId === "hammer", enemy.kind === "boss" ? "#ff8fab" : "#fff3b0");
         enemy.flash = 0.14;
-        enemy.x += p.dirX * weapon.knockback;
-        enemy.y += p.dirY * weapon.knockback;
+        displaceEntity(enemy, p.dirX * weapon.knockback, p.dirY * weapon.knockback, enemy.kind === "boss" ? 17 : 11);
         burst(game, enemy.x, enemy.y, enemy.kind === "boss" ? "#ff4d6d" : "#f4d35e", enemy.kind === "boss" ? 13 : 8, 120);
         hits++;
         if (p.weaponId === "shock-baton") {
           const stormCoil = hasEquipment(game, "storm-coil");
-          game.enemies.filter((candidate) => candidate.id !== enemy.id && dist(candidate, enemy) < (stormCoil ? 84 : 58)).slice(0, stormCoil ? 3 : 2).forEach((candidate) => {
-            candidate.hp -= weapon.damage * (stormCoil ? .85 : .65);
+          game.enemies.filter((candidate) => candidate.id !== enemy.id && enemyIsTargetable(candidate) && dist(candidate, enemy) < (stormCoil ? 84 : 58)).slice(0, stormCoil ? 3 : 2).forEach((candidate) => {
+            const chainDamage = damageEnemy(game, candidate, weapon.damage * (stormCoil ? .85 : .65));
+            showDamage(game, candidate, chainDamage, false, "#76c7dc");
             candidate.flash = .14;
             burst(game, candidate.x, candidate.y, "#76c7dc", 7, 80);
           });
@@ -2188,27 +3264,29 @@ export default function Home() {
   const heavyAttack = useCallback(() => {
     const game = gameRef.current;
     const p = game.player;
-    if (game.screen !== "playing" || p.attackCd > 0) return;
+    if (game.screen !== "playing" || (!game.testerMode && p.attackCd > 0)) return;
+    if (controlModeRef.current === "keyboard" && comfortSettingsRef.current.keyboardAimAssist) applyKeyboardAimAssist(game);
     if (p.classId === "mage") {
-      if (p.classResource < 50) { setMessage(game, "GRAVITY SIGIL // NOT ENOUGH MANA"); beep(72, .05); return; }
-      p.classResource -= 50;
-      p.attackCd = .9;
+      if (!game.testerMode && p.classResource < 50) { setMessage(game, "GRAVITY SIGIL // NOT ENOUGH MANA"); beep(72, .05); return; }
+      if (!game.testerMode) p.classResource -= 50;
+      p.attackCd = game.testerMode ? 0 : .9;
       p.heavyFx = .7;
       const center = { x: p.x + p.dirX * 95, y: p.y + p.dirY * 95 };
       let hits = 0;
       game.enemies.forEach((enemy) => {
         const distance = dist(enemy, center);
-        if (roomIndexFor(enemy.x, enemy.y) !== roomIndexFor(p.x, p.y) || distance >= 64) return;
-        if (enemy.kind === "boss" && game.pylons.filter((node) => node.active).length < 3) return;
-        enemy.hp -= (distance < 38 ? 36 : 22) * (p.furyTime > 0 ? 1.75 : 1);
+        if (!enemyIsTargetable(enemy) || roomIndexFor(enemy.x, enemy.y) !== roomIndexFor(p.x, p.y) || distance >= 64) return;
+        if (enemy.kind === "boss" && !game.bossEngaged) return;
+        const damage = (distance < 38 ? 36 : 22) * (p.furyTime > 0 ? 1.75 : 1);
+        const appliedDamage = damageEnemy(game, enemy, damage);
+        showDamage(game, enemy, appliedDamage, true, "#dcd3ff");
         enemy.flash = .22;
         enemy.recovery = Math.max(enemy.recovery, enemy.kind === "boss" ? .18 : .55);
         if (enemy.kind !== "boss") {
           const dx = center.x - enemy.x;
           const dy = center.y - enemy.y;
           const length = Math.max(1, Math.hypot(dx, dy));
-          enemy.x += (dx / length) * 18;
-          enemy.y += (dy / length) * 18;
+          displaceEntity(enemy, (dx / length) * 18, (dy / length) * 18, 11);
         }
         burst(game, enemy.x, enemy.y, "#a78bfa", 12, 105);
         hits++;
@@ -2224,10 +3302,10 @@ export default function Home() {
       return;
     }
     if (p.classId === "archer") {
-      if (p.reloadTime > 0 || p.classResource < 3) { setMessage(game, "POWER SHOT // THREE ARROWS REQUIRED"); beep(72, .05); return; }
-      p.classResource -= 3;
-      if (p.classResource <= 0) p.reloadTime = .95;
-      p.attackCd = .9;
+      if (!game.testerMode && (p.reloadTime > 0 || p.classResource < 3)) { setMessage(game, "POWER SHOT // THREE ARROWS REQUIRED"); beep(72, .05); return; }
+      if (!game.testerMode) p.classResource -= 3;
+      if (!game.testerMode && p.classResource <= 0) p.reloadTime = .95;
+      p.attackCd = game.testerMode ? 0 : .9;
       p.heavyFx = .72;
       game.projectiles.push({
         x: p.x + p.dirX * 22, y: p.y + p.dirY * 22,
@@ -2241,14 +3319,14 @@ export default function Home() {
       return;
     }
     const weapon = getWeapon(p.weaponId);
-    if (p.stamina < 40) { setMessage(game, "COMMITTED STRIKE // NOT ENOUGH DRIVE"); beep(72, .05); return; }
-    if (weapon.ammo !== null && p.ammo < 2) { setMessage(game, `${weapon.name.toUpperCase()} // TWO ROUNDS REQUIRED`); beep(72, .05); return; }
-    p.stamina -= 40;
-    p.attackCd = Math.max(.62, weapon.cooldownMs / 1000 * 1.25);
+    if (!game.testerMode && p.stamina < 40) { setMessage(game, "COMMITTED STRIKE // NOT ENOUGH DRIVE"); beep(72, .05); return; }
+    if (!game.testerMode && weapon.ammo !== null && p.ammo < 2) { setMessage(game, `${weapon.name.toUpperCase()} // TWO ROUNDS REQUIRED`); beep(72, .05); return; }
+    if (!game.testerMode) p.stamina -= 40;
+    p.attackCd = game.testerMode ? 0 : Math.max(.62, weapon.cooldownMs / 1000 * 1.25);
     p.heavyFx = .62;
     game.weaponAttacks[p.weaponId]++;
     if (p.weaponId === "scrap-launcher" && weapon.projectile) {
-      p.ammo -= 2;
+      if (!game.testerMode) p.ammo -= 2;
       game.projectiles.push({ x: p.x + p.dirX * 20, y: p.y + p.dirY * 20, vx: p.dirX * 430, vy: p.dirY * 430, life: .82, damage: weapon.damage * 1.65, owner: "player", pierce: 2, weaponId: p.weaponId, kind: "scrap", traveled: 0 });
     } else {
       let hits = 0;
@@ -2257,13 +3335,14 @@ export default function Home() {
         const dy = enemy.y - p.y;
         const distance = Math.hypot(dx, dy);
         const facing = (dx * p.dirX + dy * p.dirY) / Math.max(1, distance);
-        if (distance < weapon.range * 1.15 && facing > Math.cos(Math.min(Math.PI, weapon.arcRadians * 1.35) / 2)) {
-          if (enemy.kind === "boss" && game.pylons.filter((node) => node.active).length < 3) return;
-          enemy.hp -= weapon.damage * weapon.attacksPerInput * 1.65 * (p.furyTime > 0 ? 1.75 : 1);
+        if (enemyIsTargetable(enemy) && distance < weapon.range * 1.15 && facing > Math.cos(Math.min(Math.PI, weapon.arcRadians * 1.35) / 2)) {
+          if (enemy.kind === "boss" && !game.bossEngaged) return;
+          const damage = weapon.damage * weapon.attacksPerInput * 1.65 * (p.furyTime > 0 ? 1.75 : 1);
+          const appliedDamage = damageEnemy(game, enemy, damage);
+          showDamage(game, enemy, appliedDamage, true, "#fff3b0");
           enemy.flash = .22;
           const knockback = enemy.kind === "boss" ? weapon.knockback * .35 : weapon.knockback * 1.6;
-          enemy.x += p.dirX * knockback;
-          enemy.y += p.dirY * knockback;
+          displaceEntity(enemy, p.dirX * knockback, p.dirY * knockback, enemy.kind === "boss" ? 17 : 11);
           burst(game, enemy.x, enemy.y, "#fff3b0", 15, 155);
           hits++;
         }
@@ -2279,30 +3358,69 @@ export default function Home() {
     beep(88, .16);
   }, [beep]);
 
+  const aimAtPointer = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (controlModeRef.current !== "mouse") return;
+    const canvas = canvasRef.current;
+    const game = gameRef.current;
+    if (!canvas || game.screen !== "playing") return;
+    const rect = canvas.getBoundingClientRect();
+    const pointerX = (event.clientX - rect.left) * (WIDTH / rect.width);
+    const pointerY = (event.clientY - rect.top) * (HEIGHT / rect.height);
+    const room = roomFor(game.player.x, game.player.y);
+    const cameraX = room.col * 8 * TILE + 4 * TILE;
+    const cameraY = room.row * 8 * TILE + 4 * TILE;
+    const playerScreenX = WIDTH / 2 + (game.player.x - cameraX) * 2;
+    const playerScreenY = HEIGHT / 2 + (game.player.y - cameraY) * 2;
+    const dx = pointerX - playerScreenX;
+    const dy = pointerY - playerScreenY;
+    const length = Math.hypot(dx, dy);
+    if (length > 3) {
+      game.player.dirX = dx / length;
+      game.player.dirY = dy / length;
+      game.player.aimDistance = Math.max(28, Math.min(220, (length / 2) * comfortSettingsRef.current.mouseAimScale));
+    }
+  }, []);
+
+  const handleCanvasPointerDown = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (controlModeRef.current !== "mouse" || (event.button !== 0 && event.button !== 2)) return;
+    event.preventDefault();
+    canvasRef.current?.focus();
+    aimAtPointer(event);
+    if (event.button === 0) {
+      mouseAttackHeld.current = comfortSettingsRef.current.holdToAttack;
+      attack();
+    }
+    else heavyAttack();
+  }, [aimAtPointer, attack, heavyAttack]);
+
+  const handleCanvasContextMenu = useCallback((event: ReactMouseEvent<HTMLCanvasElement>) => {
+    if (controlModeRef.current === "mouse") event.preventDefault();
+  }, []);
+
   const dodge = useCallback(() => {
     const game = gameRef.current;
     const p = game.player;
-    if (game.screen !== "playing" || p.dodgeCd > 0 || p.stamina < 30) return;
+    if (game.screen !== "playing" || (!game.testerMode && (p.dodgeCd > 0 || p.stamina < 30))) return;
     const phaseTreads = hasEquipment(game, "phase-treads");
-    p.dodgeCd = phaseTreads ? .55 : 0.65;
+    p.dodgeCd = game.testerMode ? 0 : phaseTreads ? .55 : 0.65;
     const classInvuln = p.classId === "mage" ? .46 : p.classId === "archer" ? .32 : .38;
     const classDistance = p.classId === "mage" ? .8 : p.classId === "archer" ? 1.18 : 1;
     p.invuln = classInvuln + game.upgrades.filter((id) => id === "phase_steps").length * .08 + (phaseTreads ? .1 : 0);
-    p.stamina -= 30;
-    moveEntity(p, p.dirX * 390 * classDistance * (game.upgrades.includes("phase_steps") ? 1.2 : 1) * (phaseTreads ? 1.2 : 1), p.dirY * 390 * classDistance * (game.upgrades.includes("phase_steps") ? 1.2 : 1) * (phaseTreads ? 1.2 : 1), 0.11, 9);
-    if (hasEquipment(game, "iron-stompers")) game.enemies.filter((enemy) => dist(enemy, p) < 30).forEach((enemy) => { enemy.hp -= 12; enemy.flash = .16; burst(game, enemy.x, enemy.y, "#76c7dc", 8, 90); });
+    if (!game.testerMode) p.stamina -= 30;
+    movePlayer(game, p.dirX * 390 * classDistance * (game.upgrades.includes("phase_steps") ? 1.2 : 1) * (phaseTreads ? 1.2 : 1), p.dirY * 390 * classDistance * (game.upgrades.includes("phase_steps") ? 1.2 : 1) * (phaseTreads ? 1.2 : 1), 0.11, 9);
+    if (hasEquipment(game, "iron-stompers")) game.enemies.filter((enemy) => enemyIsTargetable(enemy) && dist(enemy, p) < 30).forEach((enemy) => { damageEnemy(game, enemy, 12); enemy.flash = .16; burst(game, enemy.x, enemy.y, "#76c7dc", 8, 90); });
     burst(game, p.x - p.dirX * 16, p.y - p.dirY * 16, p.classId === "mage" ? "#a78bfa" : p.classId === "archer" ? "#34d399" : "#76c7dc", 11, 95);
     game.shake = .08;
     beep(320, 0.05);
   }, [beep]);
 
-  const useItem = useCallback((kind: ItemKind) => {
+  const activateItem = useCallback((kind: ItemKind) => {
     const game = gameRef.current;
     const p = game.player;
     if (game.screen !== "playing") return;
     if (kind === "tonic") {
-      if (p.potions <= 0 || p.hp >= p.maxHp) return;
-      p.potions--;
+      if ((!game.testerMode && p.potions <= 0) || p.hp >= p.maxHp) return;
+      if (!game.testerMode) p.potions--;
       p.hp = Math.min(p.maxHp, p.hp + 45);
       burst(game, p.x, p.y, "#34d399", 14, 75);
       setMessage(game, "[1] VITAL TONIC // +45 HEALTH");
@@ -2310,30 +3428,31 @@ export default function Home() {
       return;
     }
     if (kind === "fury") {
-      if (p.furyVials <= 0) return;
-      p.furyVials--;
+      if (!game.testerMode && p.furyVials <= 0) return;
+      if (!game.testerMode) p.furyVials--;
       p.furyTime = 8 + game.upgrades.filter((id) => id === "long_fuse").length * 4;
       burst(game, p.x, p.y, "#ff4d6d", 20, 105);
       setMessage(game, "[3] FURY VIAL // DAMAGE BOOSTED FOR 8 SECONDS");
       beep(690, 0.16);
       return;
     }
-    if (p.bombs <= 0) return;
-    p.bombs--;
+    if (!game.testerMode && p.bombs <= 0) return;
+    if (!game.testerMode) p.bombs--;
     const playerRoom = roomFor(p.x, p.y);
     burst(game, p.x, p.y, "#76c7dc", 34, 190);
     game.shake = .32;
     game.hitStop = .08;
     game.enemies.forEach((enemy) => {
       const enemyRoom = roomFor(enemy.x, enemy.y);
-      const bossShielded = enemy.kind === "boss" && game.pylons.filter((pylon) => pylon.active).length < 3;
-      if (enemyRoom.col === playerRoom.col && enemyRoom.row === playerRoom.row && !bossShielded) {
-        enemy.hp -= 55;
+      const bossShielded = enemy.kind === "boss" && !game.bossEngaged;
+      if (enemyRoom.col === playerRoom.col && enemyRoom.row === playerRoom.row && !bossShielded && enemyIsTargetable(enemy)) {
+        const bombDamage = damageEnemy(game, enemy, 55);
+        showDamage(game, enemy, bombDamage, true, "#d9f7ff");
         enemy.flash = .2;
         burst(game, enemy.x, enemy.y, "#d9f7ff", 12, 135);
         if (enemy.kind === "volatile" && hasEquipment(game, "volatile-heart")) {
           burst(game, enemy.x, enemy.y, "#ff8a3d", 22, 175);
-          game.enemies.filter((other) => other.id !== enemy.id && dist(other, enemy) < 78).forEach((other) => { other.hp -= 35; other.flash = .2; });
+          game.enemies.filter((other) => other.id !== enemy.id && enemyIsTargetable(other) && dist(other, enemy) < 78).forEach((other) => { damageEnemy(game, other, 35); other.flash = .2; });
           enemy.hp = 0;
         }
       }
@@ -2350,7 +3469,7 @@ export default function Home() {
     beep(110, .2);
   }, [beep]);
 
-  const usePotion = useCallback(() => useItem("tonic"), [useItem]);
+  const drinkPotion = useCallback(() => activateItem("tonic"), [activateItem]);
 
   const interact = useCallback(() => {
     const game = gameRef.current;
@@ -2422,7 +3541,12 @@ export default function Home() {
       const count = game.pylons.filter((x) => x.active).length;
       game.score += 280 * count;
       game.hype = Math.min(5, game.hype + 0.35);
-      setMessage(game, count === 3 ? "ALL SIGNALS LIVE // THE WARDEN WAKES" : `PYLON ${count}/3 ONLINE // AUDIENCE LOCKED IN`);
+      if (count === game.pylons.length) {
+        game.bossAwakenTime = 2.6;
+        game.bossEngaged = false;
+        game.shake = .45;
+      }
+      setMessage(game, count === 3 ? game.floorNumber === 2 ? "ALL SIGNALS LIVE // THE SHADOW SEAL BREAKS" : "ALL SIGNALS LIVE // THE WARDEN WAKES" : `PYLON ${count}/3 ONLINE // AUDIENCE LOCKED IN`);
       beep(720, 0.18);
       return;
     }
@@ -2454,9 +3578,18 @@ export default function Home() {
     }
     if (game.bossDead && Math.hypot(p.x - EXIT_X, p.y - EXIT_Y) < 44) {
       game.score += Math.round(game.time * 10 + p.hp * 5 + game.explored.size * 100);
-      game.screen = "won";
-      setMessage(game, "FLOOR CLEARED // SIGNAL PRESERVED");
-      syncScreen(game);
+      if (game.floorNumber === 1) {
+        const nextFloor = makeNextFloor(game);
+        gameRef.current = nextFloor;
+        keysRef.current.clear();
+        setScreen("playing");
+        setHud(makeHud(nextFloor));
+        canvasRef.current?.focus();
+      } else {
+        game.screen = "won";
+        setMessage(game, "FLOOR 02 CLEARED // SHADOW NETWORK SILENCED");
+        syncScreen(game);
+      }
       beep(860, 0.25);
     }
   }, [beep, syncScreen]);
@@ -2466,10 +3599,10 @@ export default function Home() {
     if (action === "heavy") heavyAttack();
     if (action === "dodge") dodge();
     if (action === "interact") interact();
-    if (action === "potion") usePotion();
-    if (action === "bomb") useItem("bomb");
-    if (action === "fury") useItem("fury");
-  }, [attack, dodge, heavyAttack, interact, useItem, usePotion]);
+    if (action === "potion") drinkPotion();
+    if (action === "bomb") activateItem("bomb");
+    if (action === "fury") activateItem("fury");
+  }, [activateItem, attack, dodge, drinkPotion, heavyAttack, interact]);
 
   useEffect(() => {
     setHighScore(Number(localStorage.getItem("signal-depths-high-score") || 0));
@@ -2487,6 +3620,46 @@ export default function Home() {
     if (savedStarter && allowedStarters.includes(savedStarter)) setStarterWeapon(savedStarter);
     const savedClass = localStorage.getItem("signal-depths-player-class") as PlayerClassId | null;
     if (savedClass && PLAYER_CLASS_IDS.includes(savedClass)) setSelectedClass(savedClass);
+    const savedContract = localStorage.getItem("signal-depths-broadcast-contract") as BroadcastContractId | null;
+    if (savedContract && savedContract in BROADCAST_CONTRACTS) setSelectedContract(savedContract);
+    const savedControlMode = localStorage.getItem("signal-depths-control-mode") as ControlMode | null;
+    if (savedControlMode === "keyboard" || savedControlMode === "mouse") {
+      controlModeRef.current = savedControlMode;
+      setControlMode(savedControlMode);
+    }
+    const savedTesterMode = localStorage.getItem("signal-depths-tester-mode") === "true";
+    testerModeRef.current = savedTesterMode;
+    setTesterMode(savedTesterMode);
+    gameRef.current.testerMode = savedTesterMode;
+    if (savedTesterMode) applyTesterLoadout(gameRef.current);
+    try {
+      const savedComfort = JSON.parse(localStorage.getItem("signal-depths-comfort-settings") || "{}") as Partial<ComfortSettings>;
+      const nextComfort: ComfortSettings = {
+        aimLine: typeof savedComfort.aimLine === "boolean" ? savedComfort.aimLine : true,
+        mouseAimScale: typeof savedComfort.mouseAimScale === "number" ? Math.max(.6, Math.min(1.4, savedComfort.mouseAimScale)) : 1,
+        holdToAttack: typeof savedComfort.holdToAttack === "boolean" ? savedComfort.holdToAttack : false,
+        keyboardAimAssist: typeof savedComfort.keyboardAimAssist === "boolean" ? savedComfort.keyboardAimAssist : false,
+        screenShake: savedComfort.screenShake === "off" || savedComfort.screenShake === "low" || savedComfort.screenShake === "full" ? savedComfort.screenShake : "full",
+        highContrastTelegraphs: typeof savedComfort.highContrastTelegraphs === "boolean" ? savedComfort.highContrastTelegraphs : false,
+        effectsVolume: typeof savedComfort.effectsVolume === "number" ? Math.max(0, Math.min(1, savedComfort.effectsVolume)) : 1,
+      };
+      comfortSettingsRef.current = nextComfort;
+      setComfortSettings(nextComfort);
+    } catch {
+      // Ignore malformed preferences and retain accessible defaults.
+    }
+  }, []);
+
+  useEffect(() => {
+    const stopHeldAttack = () => { mouseAttackHeld.current = false; };
+    window.addEventListener("pointerup", stopHeldAttack);
+    window.addEventListener("pointercancel", stopHeldAttack);
+    window.addEventListener("blur", stopHeldAttack);
+    return () => {
+      window.removeEventListener("pointerup", stopHeldAttack);
+      window.removeEventListener("pointercancel", stopHeldAttack);
+      window.removeEventListener("blur", stopHeldAttack);
+    };
   }, []);
 
   useEffect(() => {
@@ -2523,10 +3696,10 @@ export default function Home() {
           if (gearNearby) interactHoldTimer.current = setTimeout(interact, 520);
           else interact();
         }
-        if (key === "e") usePotion();
-        if (key === "1") useItem("tonic");
-        if (key === "2") useItem("bomb");
-        if (key === "3") useItem("fury");
+        if (key === "e") drinkPotion();
+        if (key === "1") activateItem("tonic");
+        if (key === "2") activateItem("bomb");
+        if (key === "3") activateItem("fury");
         if (key === "escape") {
           const game = gameRef.current;
           if (game.screen === "playing") game.screen = "paused";
@@ -2553,7 +3726,7 @@ export default function Home() {
       window.removeEventListener("keyup", onUp);
       if (interactHoldTimer.current) clearTimeout(interactHoldTimer.current);
     };
-  }, [armoryOpen, attack, closeHelp, dodge, heavyAttack, helpOpen, interact, openHelp, syncScreen, useItem, usePotion]);
+  }, [activateItem, armoryOpen, attack, closeHelp, dodge, drinkPotion, heavyAttack, helpOpen, interact, openHelp, syncScreen]);
 
   useEffect(() => {
     let frame = 0;
@@ -2563,9 +3736,10 @@ export default function Home() {
       const dt = Math.min(0.033, (now - last) / 1000);
       last = now;
       const game = gameRef.current;
-      updateGame(game, keysRef.current, dt);
+      updateGame(game, keysRef.current, dt, controlModeRef.current);
+      if (mouseAttackHeld.current && comfortSettingsRef.current.holdToAttack && controlModeRef.current === "mouse") attack();
       const ctx = canvasRef.current?.getContext("2d");
-      if (ctx) renderGameV2(ctx, game);
+      if (ctx) renderGameV2(ctx, game, controlModeRef.current, comfortSettingsRef.current);
       hudClock += dt;
       if (hudClock > 0.1) {
         hudClock = 0;
@@ -2576,7 +3750,7 @@ export default function Home() {
     };
     frame = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(frame);
-  }, [screen, syncScreen]);
+  }, [attack, screen, syncScreen]);
 
   const currentGame = gameRef.current;
   const runSummary = summarizeRun(runStatsFor(currentGame));
@@ -2601,15 +3775,14 @@ export default function Home() {
 
       <section className="game-shell" aria-label="Signal Depths game">
         <aside className="side-panel status-panel">
-          <p className="panel-label">SUBJECT 404 // {hud.className.toUpperCase()}</p>
-          <div className={`portrait ${hud.classId}`} aria-hidden="true"><span>{hud.className.toUpperCase()}</span></div>
+          <p className="panel-label">SUBJECT 404{" // "}{hud.className.toUpperCase()}</p>
           <Meter label="Vital" value={hud.hp} max={hud.maxHp} tone="health" />
           <Meter label="Drive" value={hud.stamina} max={100} tone="stamina" />
           {hud.classId !== "knight" && <Meter label={hud.resourceName} value={hud.classResource} max={hud.classResourceMax} tone={hud.classId === "mage" ? "mana" : "quiver"} />}
           <div className="inventory-grid">
-            <button onClick={() => useItem("tonic")} aria-label={`Use vital tonic, ${hud.potions} available`}><kbd>1</kbd><span>TONIC</span><b>×{hud.potions}</b></button>
-            <button onClick={() => useItem("bomb")} aria-label={`Use room bomb, ${hud.bombs} available`}><kbd>2</kbd><span>BOMB</span><b>×{hud.bombs}</b></button>
-            <button className={hud.furyTime > 0 ? "active" : ""} onClick={() => useItem("fury")} aria-label={`Use fury vial, ${hud.furyVials} available`}><kbd>3</kbd><span>FURY</span><b>{hud.furyTime > 0 ? `${Math.ceil(hud.furyTime)}s` : `×${hud.furyVials}`}</b></button>
+            <button onClick={() => activateItem("tonic")} aria-label={`Use vital tonic, ${testerMode ? "unlimited" : hud.potions} available`}><kbd>1</kbd><span>TONIC</span><b>{testerMode ? "∞" : `×${hud.potions}`}</b></button>
+            <button onClick={() => activateItem("bomb")} aria-label={`Use room bomb, ${testerMode ? "unlimited" : hud.bombs} available`}><kbd>2</kbd><span>BOMB</span><b>{testerMode ? "∞" : `×${hud.bombs}`}</b></button>
+            <button className={hud.furyTime > 0 ? "active" : ""} onClick={() => activateItem("fury")} aria-label={`Use fury vial, ${testerMode ? "unlimited" : hud.furyVials} available`}><kbd>3</kbd><span>FURY</span><b>{testerMode ? "∞" : hud.furyTime > 0 ? `${Math.ceil(hud.furyTime)}s` : `×${hud.furyVials}`}</b></button>
           </div>
           <div className="objective-card">
             <span>CURRENT DIRECTIVE</span>
@@ -2633,9 +3806,19 @@ export default function Home() {
         </aside>
 
         <div className="stage-wrap">
-          <div className="broadcast-strip"><i />LIVE FEED 001<i /></div>
+          <div className="broadcast-strip"><i />LIVE FEED 001{testerMode && <b className="tester-mode-badge">TESTER MODE // LIMITERS OFF</b>}<i /></div>
           <div className="canvas-frame">
-            <canvas ref={canvasRef} width={WIDTH} height={HEIGHT} tabIndex={0} aria-label="Top-down dungeon game. Use WASD to move, Space to attack, Shift plus Space for a heavy attack, Shift or K to dodge, F to interact, and number keys 1, 2, and 3 to use items." />
+            <canvas
+              ref={canvasRef}
+              width={WIDTH}
+              height={HEIGHT}
+              tabIndex={0}
+              className={controlMode === "mouse" ? "mouse-aim" : ""}
+              aria-label={controlMode === "mouse" ? "Top-down dungeon game. Use WASD to move, the mouse to aim, left click to attack, right click for a heavy attack, Shift or K to dodge, F to interact, and number keys 1, 2, and 3 to use items." : "Top-down dungeon game. Use WASD to move and aim, Space to attack, Shift plus Space for a heavy attack, Shift or K to dodge, F to interact, and number keys 1, 2, and 3 to use items."}
+              onPointerMove={aimAtPointer}
+              onPointerDown={handleCanvasPointerDown}
+              onContextMenu={handleCanvasContextMenu}
+            />
             {screen === "title" && (
               <div className="game-overlay title-overlay">
                 <div className="signal-icon" aria-hidden="true"><span /></div>
@@ -2661,6 +3844,12 @@ export default function Home() {
                   })}
                 </div>
                 <div className="class-detail"><b>{PLAYER_CLASSES[selectedClass].basicName}</b><span>{PLAYER_CLASSES[selectedClass].basicDescription}</span><b>{PLAYER_CLASSES[selectedClass].heavyName}</b><span>{PLAYER_CLASSES[selectedClass].heavyDescription}</span></div>
+                <div className="contract-heading"><span>BROADCAST CONTRACT</span><small>Choose the risk the audience is paying to see.</small></div>
+                <div className="contract-select-grid" role="radiogroup" aria-label="Choose broadcast contract">
+                  {(Object.values(BROADCAST_CONTRACTS) as BroadcastContract[]).map((contract) => <button key={contract.id} role="radio" aria-checked={selectedContract === contract.id} className={`contract-choice ${selectedContract === contract.id ? "selected" : ""}`} onClick={() => setSelectedContract(contract.id)}>
+                    <span>{contract.name}</span><strong>{contract.tagline}</strong><small className="contract-risk">RISK // {contract.risk}</small><small className="contract-reward">PAYOUT // {contract.reward}</small>
+                  </button>)}
+                </div>
                 <div className="class-actions"><button className="secondary" onClick={() => { gameRef.current.screen = "title"; setScreen("title"); }}>BACK</button><button onClick={startGame}>DESCEND AS {PLAYER_CLASSES[selectedClass].name.toUpperCase()}</button></div>
               </div>
             )}
@@ -2668,7 +3857,7 @@ export default function Home() {
               const item = EQUIPMENT[hud.nearbyEquipmentId];
               const equippedId = currentGame.equipped[item.slot];
               const equipped = equippedId ? EQUIPMENT[equippedId] : null;
-              return <div className={`loot-compare ${item.rarity}`}><span>{item.rarity} {item.slot}</span><strong>{item.name}</strong><p>{item.perk} // {item.detail}</p><i>{equipped ? `REPLACES: ${equipped.name} — ${equipped.detail}` : `${item.slot.toUpperCase()} SLOT EMPTY`}</i><small>HOLD <kbd>F</kbd> TO SWAP</small></div>;
+              return <div className={`loot-compare ${item.rarity}`}><span>{item.rarity} {item.slot}</span><strong>{item.name}</strong><p>{item.perk}{" // "}{item.detail}</p><i>{equipped ? `REPLACES: ${equipped.name} — ${equipped.detail}` : `${item.slot.toUpperCase()} SLOT EMPTY`}</i><small>HOLD <kbd>F</kbd> TO SWAP</small></div>;
             })()}
             {screen === "upgrade" && (
               <div className="game-overlay upgrade-overlay">
@@ -2716,13 +3905,13 @@ export default function Home() {
         </div>
 
         <aside className="side-panel map-panel">
-          <p className="panel-label">FLOOR 01 // TRACE</p>
-          <MiniMap rooms={hud.rooms} pylons={hud.pylons} bossDead={currentGame.bossDead} />
+          <p className="panel-label">{`FLOOR ${String(currentGame.floorNumber).padStart(2, "0")} // TRACE`}</p>
+          <MiniMap game={currentGame} />
           <div className="progress-list">
             <p><span>ROOMS TRACED</span><b>{hud.rooms}/{ROOM_COLS * ROOM_ROWS}</b></p>
             <p><span>ROOMS CLEARED</span><b>{hud.roomsCleared}/{ROOM_COLS * ROOM_ROWS}</b></p>
             <p><span>PYLONS LIVE</span><b>{hud.pylons}/3</b></p>
-            <p><span>WARDEN</span><b>{currentGame.bossDead ? "DOWN" : hud.pylons === 3 ? "LIVE" : "DORMANT"}</b></p>
+            <p><span>{currentGame.floorNumber === 2 ? "NINJA MASTER" : "WARDEN"}</span><b>{currentGame.bossDead ? "DOWN" : hud.pylons === 3 ? "LIVE" : "DORMANT"}</b></p>
           </div>
           <div className={`dare-card ${currentGame.dareComplete ? "complete" : ""}`}>
             <span>AUDIENCE DARE</span>
@@ -2731,15 +3920,7 @@ export default function Home() {
             <i><em style={{ width: `${Math.min(100, (hud.dareProgress / Math.max(1, hud.dareTarget)) * 100)}%` }} /></i>
             <small>{currentGame.dareComplete ? "COMPLETE" : `${hud.dareProgress}/${hud.dareTarget}`}</small>
           </div>
-          <div className="controls-card">
-            <span>CONTROL DECK</span>
-            <p><kbd>WASD</kbd> MOVE</p>
-            <p><kbd>SPACE</kbd> ATTACK</p>
-            <p><kbd>SHIFT + SPACE</kbd> HEAVY</p>
-            <p><kbd>SHIFT / K</kbd> DODGE</p>
-            <p><kbd>F</kbd> INTERACT</p>
-            <p><kbd>1 / 2 / 3</kbd> ITEMS</p>
-          </div>
+          <div className="active-contract"><span>ACTIVE CONTRACT</span><strong>{BROADCAST_CONTRACTS[currentGame.contractId].name}</strong><small>{BROADCAST_CONTRACTS[currentGame.contractId].risk}{" // "}{Math.round((currentGame.scoreMultiplier - 1) * 100)}% SCORE BONUS</small></div>
         </aside>
       </section>
 
@@ -2763,7 +3944,13 @@ export default function Home() {
       {helpOpen && (
         <HelpGuide
           section={helpSection}
+          controlMode={controlMode}
+          comfortSettings={comfortSettings}
+          testerMode={testerMode}
           onSectionChange={setHelpSection}
+          onControlModeChange={chooseControlMode}
+          onComfortSettingChange={updateComfortSetting}
+          onTesterModeChange={chooseTesterMode}
           onClose={closeHelp}
         />
       )}
@@ -2807,7 +3994,17 @@ function ClassArt({ classId }: { classId: PlayerClassId }) {
   return <div className={`class-art ${classId}`} aria-hidden="true"><i /><b /><em /><span /></div>;
 }
 
-function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection; onSectionChange: (section: HelpSection) => void; onClose: () => void }) {
+function HelpGuide({ section, controlMode, comfortSettings, testerMode, onSectionChange, onControlModeChange, onComfortSettingChange, onTesterModeChange, onClose }: {
+  section: HelpSection;
+  controlMode: ControlMode;
+  comfortSettings: ComfortSettings;
+  testerMode: boolean;
+  onSectionChange: (section: HelpSection) => void;
+  onControlModeChange: (mode: ControlMode) => void;
+  onComfortSettingChange: <K extends keyof ComfortSettings>(key: K, value: ComfortSettings[K]) => void;
+  onTesterModeChange: (enabled: boolean) => void;
+  onClose: () => void;
+}) {
   const [guideClass, setGuideClass] = useState<PlayerClassId>("knight");
   const [arsenalClass, setArsenalClass] = useState<PlayerClassId>("knight");
   const sections: Array<{ id: HelpSection; label: string }> = [
@@ -2839,7 +4036,7 @@ function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection
                   <li><b>Explore.</b> Only your current room is visible. Doorways reveal nothing about what waits beyond.</li>
                   <li><b>Power the feed.</b> Find and activate three golden signal pylons with <kbd>F</kbd>.</li>
                   <li><b>Get stronger.</b> Open caches, collect items, swap weapons, and choose upgrades in safe rooms.</li>
-                  <li><b>Beat the Warden.</b> Scout the skull-marked boss room early if you find it. All three pylons awaken the Warden and seal the arena until it falls.</li>
+                  <li><b>Beat the Warden.</b> The skull-marked boss gate shows your live pylon count and opens once all three pylons are active. The arena seals until the Warden falls.</li>
                 </ol>
                 <div className="guide-callout"><strong>HYPE = SCORE POWER</strong><span>Clear rooms and complete audience dares to raise your multiplier and trigger sponsor drops.</span></div>
               </div>
@@ -2847,10 +4044,53 @@ function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection
           )}
           {section === "controls" && (
             <div className="guide-section">
+              <div className="control-mode-setting">
+                <div><span>CONTROL PROFILE</span><strong>Choose how your crawler aims and attacks.</strong><small>This preference saves on this device and can be changed at any time.</small></div>
+                <div className="control-mode-options" role="group" aria-label="Choose control mode">
+                  <button className={controlMode === "keyboard" ? "active" : ""} aria-pressed={controlMode === "keyboard"} onClick={() => onControlModeChange("keyboard")}><kbd>WASD + KEYS</kbd><b>Keyboard only</b><small>Movement sets your facing direction.</small></button>
+                  <button className={controlMode === "mouse" ? "active" : ""} aria-pressed={controlMode === "mouse"} onClick={() => onControlModeChange("mouse")}><kbd>MOUSE</kbd><b>Mouse aim</b><small>Left click attacks. Right click uses your heavy attack.</small></button>
+                </div>
+              </div>
+              <div className={`tester-mode-setting ${testerMode ? "active" : ""}`}>
+                <div><span>GAME TESTER MODE</span><strong>Remove combat and resource limits.</strong><small>Grants invulnerability, unlimited time, stamina, mana, arrows, ammunition and items, plus instant attack, heavy-attack and dodge recovery. This preference saves on this device.</small></div>
+                <button className={testerMode ? "active" : ""} aria-pressed={testerMode} onClick={() => onTesterModeChange(!testerMode)}>{testerMode ? "ENABLED" : "DISABLED"}</button>
+              </div>
+              <div className="comfort-settings" aria-label="Comfort and accessibility settings">
+                <div className="comfort-setting-row">
+                  <div><strong>Aim guide</strong><small>Show the dotted line between your crawler and mouse reticle.</small></div>
+                  <button className={comfortSettings.aimLine ? "active" : ""} aria-pressed={comfortSettings.aimLine} onClick={() => onComfortSettingChange("aimLine", !comfortSettings.aimLine)}>{comfortSettings.aimLine ? "ON" : "OFF"}</button>
+                </div>
+                <label className="comfort-setting-row volume-setting">
+                  <div><strong>Mouse aim range</strong><small>Scales how far the in-game reticle follows pointer movement.</small></div>
+                  <span><input type="range" min="60" max="140" step="10" value={Math.round(comfortSettings.mouseAimScale * 100)} onChange={(event) => onComfortSettingChange("mouseAimScale", Number(event.target.value) / 100)} aria-label="Mouse aim range" /><b>{Math.round(comfortSettings.mouseAimScale * 100)}%</b></span>
+                </label>
+                <div className="comfort-setting-row">
+                  <div><strong>Hold to attack</strong><small>Keep left click held to repeat basic attacks as recovery allows.</small></div>
+                  <button className={comfortSettings.holdToAttack ? "active" : ""} aria-pressed={comfortSettings.holdToAttack} onClick={() => onComfortSettingChange("holdToAttack", !comfortSettings.holdToAttack)}>{comfortSettings.holdToAttack ? "ON" : "OFF"}</button>
+                </div>
+                <div className="comfort-setting-row">
+                  <div><strong>Keyboard aim assist</strong><small>Gently nudges attacks toward a nearby target already close to your facing direction.</small></div>
+                  <button className={comfortSettings.keyboardAimAssist ? "active" : ""} aria-pressed={comfortSettings.keyboardAimAssist} onClick={() => onComfortSettingChange("keyboardAimAssist", !comfortSettings.keyboardAimAssist)}>{comfortSettings.keyboardAimAssist ? "ON" : "OFF"}</button>
+                </div>
+                <div className="comfort-setting-row">
+                  <div><strong>High-contrast telegraphs</strong><small>Give incoming enemy attacks thicker white outlines and stronger fills.</small></div>
+                  <button className={comfortSettings.highContrastTelegraphs ? "active" : ""} aria-pressed={comfortSettings.highContrastTelegraphs} onClick={() => onComfortSettingChange("highContrastTelegraphs", !comfortSettings.highContrastTelegraphs)}>{comfortSettings.highContrastTelegraphs ? "ON" : "OFF"}</button>
+                </div>
+                <div className="comfort-setting-row shake-setting">
+                  <div><strong>Screen shake</strong><small>Low reduces camera movement. Off also serves as reduced-motion mode.</small></div>
+                  <div className="comfort-segments" role="group" aria-label="Screen shake intensity">
+                    {(["off", "low", "full"] as ScreenShakeLevel[]).map((level) => <button key={level} className={comfortSettings.screenShake === level ? "active" : ""} aria-pressed={comfortSettings.screenShake === level} onClick={() => onComfortSettingChange("screenShake", level)}>{level.toUpperCase()}</button>)}
+                  </div>
+                </div>
+                <label className="comfort-setting-row volume-setting">
+                  <div><strong>Effects volume</strong><small>Controls attack, impact, interaction, and menu sounds.</small></div>
+                  <span><input type="range" min="0" max="100" step="10" value={Math.round(comfortSettings.effectsVolume * 100)} onChange={(event) => onComfortSettingChange("effectsVolume", Number(event.target.value) / 100)} aria-label="Effects volume" /><b>{Math.round(comfortSettings.effectsVolume * 100)}%</b></span>
+                </label>
+              </div>
               <div className="control-guide-grid">
-                <GuideControl keys="W A S D" title="Move" copy="Travel, aim your next strike, and approach interactable objects." />
-                <GuideControl keys="SPACE / J" title="Basic Attack" copy="Use your class's normal strike, spell, or shot in the direction you face." />
-                <GuideControl keys="SHIFT + SPACE" title="Heavy Attack" copy="Commit class resources to a stronger attack with unique control or piercing behavior." />
+                <GuideControl keys="W A S D" title="Move" copy={controlMode === "mouse" ? "Move independently while the pointer controls your aim." : "Travel, aim your next strike, and approach interactable objects."} />
+                <GuideControl keys={controlMode === "mouse" ? "LEFT CLICK" : "SPACE / J"} title="Basic Attack" copy={controlMode === "mouse" && comfortSettings.holdToAttack ? "Hold left click to repeat your class's normal attack whenever it recovers." : controlMode === "keyboard" && comfortSettings.keyboardAimAssist ? "Attacks receive a modest nudge toward a nearby target already close to your facing direction." : "Use your class's normal strike, spell, or shot in the direction you face."} />
+                <GuideControl keys={controlMode === "mouse" ? "RIGHT CLICK" : "SHIFT + SPACE"} title="Heavy Attack" copy="Commit class resources to a stronger attack with unique control or piercing behavior." />
                 <GuideControl keys="SHIFT / K" title="Dodge" copy="Tap Shift or press K to spend Drive for a brief window of invulnerability." />
                 <GuideControl keys="F / HOLD F" title="Interact" copy="Tap for objects and consumables. Hold near equipment to confirm a gear swap." />
                 <GuideControl keys="1 / E" title="Vital Tonic" copy="Restore 45 health. It cannot be used while already at full health." />
@@ -2870,7 +4110,7 @@ function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection
                 })}
               </nav>
               <div className="class-guide-grid">
-                {(() => { const entry = PLAYER_CLASSES[guideClass]; return <article className="guide-card class-guide-card" key={guideClass} style={{ "--class-color": entry.color } as CSSProperties}><ClassArt classId={guideClass} /><div><span>{entry.role}</span><h3>{entry.name} // {entry.tagline}</h3><p>{entry.description}</p><div className="class-move-grid"><section><strong>BASIC // {entry.basicName}</strong><small>{entry.basicDescription}</small></section><section><strong>HEAVY // {entry.heavyName}</strong><small>{entry.heavyDescription}</small></section></div><em>STRONG: {entry.strengths}<br />WATCH: {entry.weakness}</em></div></article>; })()}
+                {(() => { const entry = PLAYER_CLASSES[guideClass]; return <article className="guide-card class-guide-card" key={guideClass} style={{ "--class-color": entry.color } as CSSProperties}><ClassArt classId={guideClass} /><div><span>{entry.role}</span><h3>{entry.name}{" // "}{entry.tagline}</h3><p>{entry.description}</p><div className="class-move-grid"><section><strong>BASIC{" // "}{entry.basicName}</strong><small>{entry.basicDescription}</small></section><section><strong>HEAVY{" // "}{entry.heavyName}</strong><small>{entry.heavyDescription}</small></section></div><em>STRONG: {entry.strengths}<br />WATCH: {entry.weakness}</em></div></article>; })()}
               </div>
             </div>
           )}
@@ -2884,13 +4124,13 @@ function HelpGuide({ section, onSectionChange, onClose }: { section: HelpSection
                 {arsenalClass === "knight" && Object.values(WEAPONS).map((weapon) => (
                   <article className="guide-card weapon-guide-card" key={weapon.id}>
                     <GuideWeaponArt weapon={weapon.id} />
-                    <div><span>{weapon.rarity} // {weapon.damageType}</span><h3>{weapon.name}</h3><p>{weapon.description}</p><strong className="weapon-tactic">{WEAPON_TACTICS[weapon.id]}</strong><small>{weapon.damage} DMG · {weapon.range} RANGE · {weapon.cooldownMs}ms RECOVERY{weapon.ammo ? ` · ${weapon.ammo} AMMO` : ""}</small></div>
+                    <div><span>{weapon.rarity}{" // "}{weapon.damageType}</span><h3>{weapon.name}</h3><p>{weapon.description}</p><strong className="weapon-tactic">{WEAPON_TACTICS[weapon.id]}</strong><small>{weapon.damage} DMG · {weapon.range} RANGE · {weapon.cooldownMs}ms RECOVERY{weapon.ammo ? ` · ${weapon.ammo} AMMO` : ""}</small></div>
                   </article>
                 ))}
-                {arsenalClass !== "knight" && arsenalForClass(arsenalClass).map((item) => <article className="guide-card weapon-guide-card class-arsenal-card" key={item.id} style={{ "--arsenal-color": item.color } as CSSProperties}><GuideClassArsenalArt item={item.id} /><div><span>{item.rarity} // {item.damageType}</span><h3>{item.name}</h3><p>{item.description}</p><strong className="weapon-tactic">{item.mechanic}</strong><small>{item.damage} DMG · {Math.round(item.cooldown * 1000)}ms RECOVERY · {item.speed} SPEED{item.ammoCost ? ` · ${item.ammoCost} ARROW${item.ammoCost === 1 ? "" : "S"}` : ""}</small></div></article>)}
+                {arsenalClass !== "knight" && arsenalForClass(arsenalClass).map((item) => <article className="guide-card weapon-guide-card class-arsenal-card" key={item.id} style={{ "--arsenal-color": item.color } as CSSProperties}><GuideClassArsenalArt item={item.id} /><div><span>{item.rarity}{" // "}{item.damageType}</span><h3>{item.name}</h3><p>{item.description}</p><strong className="weapon-tactic">{item.mechanic}</strong><small>{item.damage} DMG · {Math.round(item.cooldown * 1000)}ms RECOVERY · {item.speed} SPEED{item.ammoCost ? ` · ${item.ammoCost} ARROW${item.ammoCost === 1 ? "" : "S"}` : ""}</small></div></article>)}
               </div>
               <p className="guide-intro equipment-guide-intro">Equipment occupies one of four slots: armor, boots, charm, or weapon mod. Matching perks creates builds that can change how you move, score, heal, and attack.</p>
-              <div className="arsenal-grid">{EQUIPMENT_IDS.map((id) => { const item = EQUIPMENT[id]; return <article className="guide-card weapon-guide-card" key={id}><EquipmentArt item={id} /><div><span>{item.rarity} // {item.slot}</span><h3>{item.name}</h3><p><b>{item.perk}</b> — {item.detail}</p></div></article>; })}</div>
+              <div className="arsenal-grid">{EQUIPMENT_IDS.map((id) => { const item = EQUIPMENT[id]; return <article className="guide-card weapon-guide-card" key={id}><EquipmentArt item={id} /><div><span>{item.rarity}{" // "}{item.slot}</span><h3>{item.name}</h3><p><b>{item.perk}</b> — {item.detail}</p></div></article>; })}</div>
             </div>
           )}
           {section === "enemies" && (
@@ -2951,15 +4191,37 @@ function Meter({ label, value, max, tone }: { label: string; value: number; max:
   );
 }
 
-function MiniMap({ rooms, pylons, bossDead }: { rooms: number; pylons: number; bossDead: boolean }) {
+function MiniMap({ game }: { game: Game }) {
   const totalRooms = ROOM_COLS * ROOM_ROWS;
+  const currentRoom = roomIndexFor(game.player.x, game.player.y);
+  const bossRoom = game.roomKinds.findIndex((kind) => kind === "boss");
+  const exitRoom = roomIndexFor(EXIT_X, EXIT_Y);
+  const poweredPylons = new Set(
+    game.pylons.filter((pylon) => pylon.active).map((pylon) => roomIndexFor(pylon.x, pylon.y)),
+  );
   return (
-    <div className="mini-map" aria-label={`${rooms} of ${totalRooms} rooms discovered`}>
+    <div className="mini-map" aria-label={`${game.explored.size} of ${totalRooms} rooms discovered`}>
       {Array.from({ length: totalRooms }, (_, room) => (
-        <div key={room} className={`${room < rooms ? "seen" : ""} ${room === totalRooms - 1 && !bossDead ? "danger" : ""}`}>
-          {[2, 5, 8].slice(0, pylons).includes(room) ? <i className="pylon-dot" /> : null}
-          {room === totalRooms - 1 && bossDead ? <i className="exit-dot" /> : null}
-        </div>
+        (() => {
+          const seen = game.explored.has(String(room));
+          const bossState = room === bossRoom && seen ? game.bossDead ? "boss-down" : bossGateOpen(game) ? "boss-live" : "boss-locked" : "";
+          const exitState = room === exitRoom && seen ? game.bossDead ? "exit-open" : "exit-locked" : "";
+          const classes = [seen ? "seen" : "unknown", seen && game.roomCleared[room] ? "cleared" : "", room === currentRoom ? "current" : "", bossState, exitState].filter(Boolean).join(" ");
+          const stateLabel = !seen ? "unknown" : [
+            game.roomCleared[room] ? "cleared" : "discovered",
+            room === currentRoom ? "current" : "",
+            bossState.replace("-", " "),
+            exitState.replace("-", " "),
+            poweredPylons.has(room) ? "pylon powered" : "",
+          ].filter(Boolean).join(", ");
+          return <div key={room} className={classes} aria-label={`Room ${room + 1}: ${stateLabel}`}>
+            {seen ? <span className="room-id">{String(room + 1).padStart(2, "0")}</span> : null}
+            {room === currentRoom ? <i className="current-dot" /> : null}
+            {seen && poweredPylons.has(room) ? <i className="pylon-dot" /> : null}
+            {room === bossRoom && seen && !game.bossDead ? <i className="boss-dot">!</i> : null}
+            {room === exitRoom && seen ? <i className="exit-dot" /> : null}
+          </div>;
+        })()
       ))}
     </div>
   );

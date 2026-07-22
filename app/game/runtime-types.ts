@@ -1,0 +1,210 @@
+import type { ClassArsenalBehavior, ClassArsenalId } from "./class-arsenal";
+import type { PlayerClassId } from "./classes";
+import type { WeaponId } from "./combat-content";
+import type { EquipmentId, EquipmentSlot } from "./equipment";
+import type { RoomKind } from "./floor";
+import type { RunUpgradeId } from "./progression";
+
+export type EnemyKind = "skitter" | "warden" | "spitter" | "healer" | "mimic" | "volatile" | "broadcaster" | "bulwark" | "burrower" | "ninja" | "boss";
+
+export type Enemy = {
+  id: number;
+  kind: EnemyKind;
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+  speed: number;
+  damage: number;
+  cooldown: number;
+  flash: number;
+  windup: number;
+  recovery: number;
+  elite: boolean;
+  homeRoomIndex: number;
+  castStartHp?: number;
+  shieldTime?: number;
+  shieldDirX?: number;
+  shieldDirY?: number;
+  burrowPhase?: "digging" | "underground" | "erupting";
+  phaseTime?: number;
+  targetX?: number;
+  targetY?: number;
+  summonerId?: number;
+  variant?: "warden" | "ninja";
+  restTime?: number;
+  scale?: number;
+};
+
+export type ProjectileKind = "enemy" | "scrap" | "arc-bolt" | "arrow" | "power-arrow" | "shuriken";
+export type Projectile = { x: number; y: number; vx: number; vy: number; life: number; damage: number; owner?: "enemy" | "player"; pierce?: number; weaponId?: WeaponId; arsenalId?: ClassArsenalId; behavior?: ClassArsenalBehavior; kind?: ProjectileKind; splash?: number; splashDamage?: number; traveled?: number; slow?: number; bounces?: number };
+export type Particle = { x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string; size: number };
+export type CombatText = { x: number; y: number; text: string; life: number; maxLife: number; color: string; scale: number };
+export type BurrowHazard = { x: number; y: number; life: number; tick: number };
+export type Pylon = { x: number; y: number; active: boolean };
+export type Chest = { x: number; y: number; open: boolean; openFx: number };
+export type ItemKind = "tonic" | "bomb" | "fury";
+export type GroundItem = { id: number; kind: ItemKind; x: number; y: number; phase: number };
+export type GroundWeapon = { id: number; weaponId: WeaponId; x: number; y: number; phase: number };
+export type GroundClassArsenal = { id: number; arsenalId: ClassArsenalId; x: number; y: number; phase: number };
+export type GroundEquipment = { id: number; equipmentId: EquipmentId; x: number; y: number; phase: number };
+export type Screen = "title" | "class-select" | "playing" | "paused" | "upgrade" | "won" | "lost";
+export type HelpSection = "mission" | "classes" | "controls" | "arsenal" | "enemies" | "rooms";
+export type ControlMode = "keyboard" | "mouse";
+export type ScreenShakeLevel = "off" | "low" | "full";
+export type BroadcastContractId = "redline" | "iron-signal" | "one-take";
+
+export type ComfortSettings = {
+  aimLine: boolean;
+  mouseAimScale: number;
+  holdToAttack: boolean;
+  keyboardAimAssist: boolean;
+  screenShake: ScreenShakeLevel;
+  highContrastTelegraphs: boolean;
+  effectsVolume: number;
+};
+
+export const DEFAULT_COMFORT_SETTINGS: ComfortSettings = {
+  aimLine: true,
+  mouseAimScale: 1,
+  holdToAttack: false,
+  keyboardAimAssist: false,
+  screenShake: "full",
+  highContrastTelegraphs: false,
+  effectsVolume: 1,
+};
+
+export type Game = {
+  screen: Screen;
+  testerMode: boolean;
+  floorNumber: number;
+  player: {
+    classId: PlayerClassId;
+    classArsenalId: ClassArsenalId;
+    x: number;
+    y: number;
+    hp: number;
+    maxHp: number;
+    stamina: number;
+    classResource: number;
+    reloadTime: number;
+    damage: number;
+    speed: number;
+    dirX: number;
+    dirY: number;
+    attackCd: number;
+    attackFx: number;
+    dodgeCd: number;
+    invuln: number;
+    potions: number;
+    bombs: number;
+    furyVials: number;
+    furyTime: number;
+    weaponId: WeaponId;
+    ammo: number;
+    moving: boolean;
+    stepTimer: number;
+    heavyFx: number;
+    aimDistance: number;
+  };
+  enemies: Enemy[];
+  projectiles: Projectile[];
+  particles: Particle[];
+  combatText: CombatText[];
+  burrowHazards: BurrowHazard[];
+  pylons: Pylon[];
+  chests: Chest[];
+  groundItems: GroundItem[];
+  groundWeapons: GroundWeapon[];
+  groundClassArsenal: GroundClassArsenal[];
+  groundEquipment: GroundEquipment[];
+  explored: Set<string>;
+  time: number;
+  score: number;
+  contractId: BroadcastContractId;
+  scoreMultiplier: number;
+  hype: number;
+  kills: number;
+  bossDead: boolean;
+  bossAwakenTime: number;
+  bossEngaged: boolean;
+  bossIntroTime: number;
+  bossPhaseFx: number;
+  bossPhaseName: string;
+  safeUsed: boolean;
+  message: string;
+  messageTime: number;
+  elapsed: number;
+  nextId: number;
+  shake: number;
+  hitStop: number;
+  floorSeed: number;
+  roomKinds: RoomKind[];
+  roomStarted: boolean[];
+  roomCleared: boolean[];
+  roomTimers: number[];
+  mazeAmbushes: Set<string>;
+  mazeSolved: Set<number>;
+  roomClearFx: number;
+  roomClearRoomIndex: number;
+  currentRoomIndex: number;
+  upgrades: RunUpgradeId[];
+  upgradeChoices: RunUpgradeId[];
+  activeDareId: string;
+  dareProgress: number;
+  dareComplete: boolean;
+  damageTaken: number;
+  damageBySource: Record<string, number>;
+  deathRoomKind: RoomKind | null;
+  weaponAttacks: Record<WeaponId, number>;
+  weaponHits: Record<WeaponId, number>;
+  equipped: Record<EquipmentSlot, EquipmentId | null>;
+  discoveredEquipment: EquipmentId[];
+  discoveredEnemies: EnemyKind[];
+  maxHype: number;
+  roomsCleared: number;
+  lastBossPhase: string;
+  resultsSaved: boolean;
+  newUnlocks: string[];
+  sponsorHypeChecked: number;
+};
+
+export type Hud = {
+  hp: number;
+  maxHp: number;
+  stamina: number;
+  classId: PlayerClassId;
+  className: string;
+  resourceName: string;
+  classResource: number;
+  classResourceMax: number;
+  time: number;
+  score: number;
+  hype: number;
+  rooms: number;
+  pylons: number;
+  potions: number;
+  bombs: number;
+  furyVials: number;
+  furyTime: number;
+  weaponName: string;
+  ammo: number;
+  nearbyEquipmentId: EquipmentId | null;
+  equipmentNames: string[];
+  roomKind: RoomKind;
+  roomsCleared: number;
+  dareName: string;
+  dareProgress: number;
+  dareTarget: number;
+  message: string;
+  objective: string;
+};
+
+export type ArmorySnapshot = {
+  weapons: WeaponId[];
+  equipment: EquipmentId[];
+  enemies: EnemyKind[];
+  unlocks: string[];
+  runs: number;
+  kills: number;
+};
