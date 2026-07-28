@@ -1,9 +1,13 @@
 import type { ClassArsenalBehavior, ClassArsenalId } from "./class-arsenal";
+import type { CursedItemId } from "./cursed-items";
 import type { PlayerClassId } from "./classes";
 import type { WeaponId } from "./combat-content";
 import type { EquipmentId, EquipmentSlot } from "./equipment";
 import type { RoomKind } from "./floor";
 import type { RunUpgradeId } from "./progression";
+import type { SecretChamber } from "./secrets";
+import type { AudienceModifierId } from "./broadcast-features";
+import type { FloorNavigationMap } from "./floor-navigation";
 
 export type EnemyKind = "skitter" | "warden" | "spitter" | "healer" | "mimic" | "volatile" | "broadcaster" | "bulwark" | "burrower" | "ninja" | "boss";
 
@@ -31,8 +35,11 @@ export type Enemy = {
   targetX?: number;
   targetY?: number;
   summonerId?: number;
-  variant?: "warden" | "ninja";
+  variant?: "warden" | "conductor" | "ninja";
   restTime?: number;
+  specialTime?: number;
+  specialPattern?: number;
+  audienceSpeedMultiplier?: number;
   scale?: number;
 };
 
@@ -48,6 +55,7 @@ export type GroundItem = { id: number; kind: ItemKind; x: number; y: number; pha
 export type GroundWeapon = { id: number; weaponId: WeaponId; x: number; y: number; phase: number };
 export type GroundClassArsenal = { id: number; arsenalId: ClassArsenalId; x: number; y: number; phase: number };
 export type GroundEquipment = { id: number; equipmentId: EquipmentId; x: number; y: number; phase: number };
+export type GroundCursedItem = { id: number; cursedItemId: CursedItemId; x: number; y: number; phase: number };
 export type Screen = "title" | "class-select" | "playing" | "paused" | "upgrade" | "won" | "lost";
 export type HelpSection = "mission" | "classes" | "controls" | "arsenal" | "enemies" | "rooms";
 export type ControlMode = "keyboard" | "mouse";
@@ -114,10 +122,14 @@ export type Game = {
   burrowHazards: BurrowHazard[];
   pylons: Pylon[];
   chests: Chest[];
+  secrets: SecretChamber[];
+  secretsFound: number;
+  secretsTotal: number;
   groundItems: GroundItem[];
   groundWeapons: GroundWeapon[];
   groundClassArsenal: GroundClassArsenal[];
   groundEquipment: GroundEquipment[];
+  groundCursedItems: GroundCursedItem[];
   explored: Set<string>;
   time: number;
   score: number;
@@ -139,6 +151,7 @@ export type Game = {
   shake: number;
   hitStop: number;
   floorSeed: number;
+  navigation: FloorNavigationMap;
   roomKinds: RoomKind[];
   roomStarted: boolean[];
   roomCleared: boolean[];
@@ -163,10 +176,24 @@ export type Game = {
   discoveredEnemies: EnemyKind[];
   maxHype: number;
   roomsCleared: number;
+  priorRoomsCleared: number;
+  priorRoomsExplored: number;
   lastBossPhase: string;
   resultsSaved: boolean;
   newUnlocks: string[];
   sponsorHypeChecked: number;
+  runMode: "standard" | "daily";
+  dailyKey: string | null;
+  activeAudienceModifierId: AudienceModifierId | null;
+  audienceModifierRooms: number;
+  audienceMilestones: number[];
+  cursedItemId: CursedItemId | null;
+  cursedDropRoomIndex: number;
+  cursedDropSpawned: boolean;
+  cursedRoomsCleared: number;
+  cursedItemsCarried: number;
+  cursedMaxHpLoss: number;
+  lastCombatTime: number;
 };
 
 export type Hud = {
@@ -190,9 +217,14 @@ export type Hud = {
   weaponName: string;
   ammo: number;
   nearbyEquipmentId: EquipmentId | null;
+  nearbyCursedItemId: CursedItemId | null;
   equipmentNames: string[];
+  cursedItemId: CursedItemId | null;
+  cursedRoomsCleared: number;
   roomKind: RoomKind;
   roomsCleared: number;
+  secretsFound: number;
+  secretsTotal: number;
   dareName: string;
   dareProgress: number;
   dareTarget: number;

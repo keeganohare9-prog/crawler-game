@@ -151,6 +151,7 @@ export interface RunStats {
   readonly lootValue: number;
   readonly remainingSeconds?: number;
   readonly favoriteWeapon?: string;
+  readonly cursedItemsCarried?: number;
 }
 
 export interface RunSummary {
@@ -174,6 +175,7 @@ export function calculateRunScore(stats: RunStats): number {
     stats.elitesDefeated * 300 +
     stats.bossesDefeated * 1500 +
     stats.daresCompleted * 500 +
+    (stats.cursedItemsCarried ?? 0) * 250 +
     stats.secretsFound * 400 +
     Math.round(stats.lootValue * 0.5) +
     Math.max(0, stats.remainingSeconds ?? 0) * 4 +
@@ -195,6 +197,7 @@ export function summarizeRun(stats: RunStats): RunSummary {
   if (stats.damageTaken === 0) highlights.push("Untouchable run");
   if (stats.daresCompleted >= 3) highlights.push("Audience darling");
   if (stats.secretsFound > 0) highlights.push(`${stats.secretsFound} secret${stats.secretsFound === 1 ? "" : "s"} found`);
+  if ((stats.cursedItemsCarried ?? 0) > 0) highlights.push(`${stats.cursedItemsCarried} cursed relic${stats.cursedItemsCarried === 1 ? "" : "s"} carried`);
   if (stats.favoriteWeapon) highlights.push(`Favorite: ${stats.favoriteWeapon}`);
   return {
     score,

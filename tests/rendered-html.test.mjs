@@ -99,6 +99,56 @@ test("offers persistent broadcast contracts that alter run risk and payout", asy
   assert.match(page, /ACTIVE CONTRACT/);
 });
 
+test("applies deterministic audience rules and class build synergies consistently", async () => {
+  const [page, features, styles] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/game/broadcast-features.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  for (const id of ["hot_mics", "glass_floor", "speed_round", "sponsor_frenzy", "dead_air", "encore"]) assert.match(features, new RegExp(`id: "${id}"`));
+  for (const id of ["knight_breaker", "knight_vanguard", "mage_storm", "mage_void", "archer_deadeye", "archer_trickshot"]) assert.match(features, new RegExp(`id: "${id}"`));
+  assert.match(features, /audienceBallot/);
+  assert.match(features, /resolveAudienceVote/);
+  assert.match(features, /BUILD_SYNERGY_GUIDE/);
+  assert.match(page, /function settleAudienceRoomClear/);
+  assert.match(page, /settleAudienceRoomClear\(game, 450, 7\)/);
+  assert.match(page, /audienceModifierRooms = Math\.max\(0, game\.audienceModifierRooms - 1\)/);
+  assert.match(page, /function applyAudienceSpeed/);
+  assert.match(page, /applyAudienceSpeed\(game, spawned\)/);
+  assert.match(page, /audienceSpeedMultiplier \?\? 1/);
+  assert.match(page, /function healPlayer/);
+  assert.match(page, /healPlayer\(game, 2\)/);
+  assert.match(page, /healPlayer\(game, 3\)/);
+  assert.match(page, /healPlayer\(game, 4\)/);
+  assert.match(page, /healPlayer\(game, p\.maxHp - p\.hp\)/);
+  assert.match(page, /AUDIENCE VOTES \/\/ ROOMS 3, 6, AND 9/);
+  assert.match(page, /BUILD \/\/ \{buildSynergyFor\(currentGame\)\.name\.toUpperCase\(\)\}/);
+  assert.match(styles, /\.audience-rule-grid/);
+  assert.match(styles, /\.synergy-guide-card/);
+});
+
+test("makes cursed relics deterministic, playable, and visible", async () => {
+  const [page, runtime, cursed, progression, styles] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/game/runtime-types.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/game/cursed-items.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/game/progression.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(cursed, /selectCursedItem/);
+  assert.match(cursed, /selectCursedDropRoom/);
+  assert.match(runtime, /groundCursedItems: GroundCursedItem\[\]/);
+  assert.match(runtime, /cursedItemId: CursedItemId \| null/);
+  assert.match(page, /function carryCursedItem/);
+  assert.match(page, /CURSE ACCEPTED/);
+  assert.match(page, /cursedHypeMultiplier/);
+  assert.match(page, /cursedRoomsCleared\+\+/);
+  assert.match(page, /activeDareId === "cursed_carrier"/);
+  assert.match(progression, /cursedItemsCarried/);
+  assert.match(styles, /\.carried-curse/);
+  assert.match(styles, /\.curse-guide-card/);
+});
+
 test("uses wide doorways, a sealed boss gate, and Gambler's Cache rooms", async () => {
   const [page, floor] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -186,7 +236,7 @@ test("adds a maze-driven second floor and a multi-state Ninja Master boss", asyn
     readFile(new URL("../app/game/maze-layout.ts", import.meta.url), "utf8"),
   ]);
   assert.match(runtime, /floorNumber: number/);
-  assert.match(page, /roomKinds\[4\] = "maze"/);
+  assert.match(page, /mazeSlots\.forEach\(\(slot\) => \{ roomKinds\[slot\] = "maze"; \}\)/);
   assert.match(page, /activeMazeRooms/);
   assert.match(maze, /MAZE_WALL_CELLS/);
   assert.match(maze, /MAZE_WRONG_TURNS/);
@@ -195,8 +245,7 @@ test("adds a maze-driven second floor and a multi-state Ninja Master boss", asyn
   assert.match(runtime, /mazeSolved: Set<number>/);
   assert.match(maze, /function mazeGoalPosition/);
   assert.match(page, /MAZE SOLVED \/\/ ALL ROUTES RELEASED/);
-  assert.match(page, /trappedInMaze/);
-  assert.match(runtime, /variant\?: "warden" \| "ninja"/);
+  assert.match(runtime, /variant\?:[^;]*"warden"[^;]*"ninja"/);
   assert.match(page, /function summonSignalNinjas/);
   assert.match(page, /NINJA REST MODE/);
   assert.match(page, /kind === "shuriken"/);

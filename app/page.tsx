@@ -1,14 +1,29 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { generateFloor, type RoomKind } from "./game/floor";
+import { generateFloor, type CardinalDirection, type RoomKind } from "./game/floor";
+import { buildFloorNavigation, connectionInDirection, nextConnectionToward, roomIdAtSlot, type FloorNavigationMap, type PhysicalDoorConnection } from "./game/floor-navigation";
 import { WEAPONS, getWeapon, selectWeaponDrop, type WeaponId } from "./game/combat-content";
 import { EQUIPMENT, EQUIPMENT_IDS, selectEquipmentDrop, type EquipmentId, type EquipmentSlot } from "./game/equipment";
-import { AUDIENCE_DARES, PERMANENT_UNLOCKS, RUN_UPGRADES, bossPhaseForHealth, chooseAudienceDares, chooseSafeRoomUpgrades, newlyEarnedUnlocks, sponsorRewardsCrossed, summarizeRun, type RunStats, type RunUpgradeId } from "./game/progression";
+import { AUDIENCE_DARES, CURSED_ITEMS, PERMANENT_UNLOCKS, RUN_UPGRADES, bossPhaseForHealth, chooseAudienceDares, chooseSafeRoomUpgrades, newlyEarnedUnlocks, sponsorRewardsCrossed, summarizeRun, type RunStats, type RunUpgradeId } from "./game/progression";
+import { cursedDamageMultiplier, cursedEffectLines, cursedHazardWarningReduction, cursedHypeMultiplier, cursedIncomingDamage, cursedMoveSpeedMultiplier, getCursedItem, selectCursedDropRoom, selectCursedItem, type CursedItemId } from "./game/cursed-items";
 import { PLAYER_CLASSES, PLAYER_CLASS_IDS, type PlayerClassId } from "./game/classes";
 import { CLASS_ARSENAL, arsenalForClass, selectClassArsenalDrop, type ClassArsenalId } from "./game/class-arsenal";
 import { hazardStateAt, hazardTilesForRoom, isRoomObstacleTile, pointIsOnHazard } from "./game/room-layout";
 import { MAZE_WRONG_TURNS, isMazeWallCell, mazeGoalPosition } from "./game/maze-layout";
+import {
+  AUDIENCE_MODIFIERS,
+  BUILD_SYNERGY_GUIDE,
+  activeBuildSynergy,
+  addRunHistory,
+  audienceBallot,
+  dailySeed,
+  localDateKey,
+  parseRunHistory,
+  resolveAudienceVote,
+  type RunHistoryEntry,
+} from "./game/broadcast-features";
+import { generateSecretChambers, secretRewardLabel } from "./game/secrets";
 import {
   DEFAULT_COMFORT_SETTINGS,
   type ArmorySnapshot,
@@ -41,6 +56,22 @@ const EXIT_Y = (MAP_H - 1.5) * TILE;
 const BOSS_VERSUS_DURATION = 3.4;
 
 const EMPTY_ARMORY: ArmorySnapshot = { weapons: ["cleaver"], equipment: [], enemies: [], unlocks: [], runs: 0, kills: 0 };
+const RUN_HISTORY_STORAGE_KEY = "signal-depths-run-history";
+
+function parseStoredArray<T>(raw: string | null, fallback: readonly T[], isValid: (value: unknown) => value is T): T[] {
+  if (!raw) return [...fallback];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(isValid) : [...fallback];
+  } catch {
+    return [...fallback];
+  }
+}
+
+function storedNumber(raw: string | null) {
+  const value = Number(raw ?? 0);
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
 
 const initialHud: Hud = {
   hp: 100,
@@ -63,9 +94,14 @@ const initialHud: Hud = {
   weaponName: "Signal Cleaver",
   ammo: 0,
   nearbyEquipmentId: null,
+  nearbyCursedItemId: null,
   equipmentNames: [],
+  cursedItemId: null,
+  cursedRoomsCleared: 0,
   roomKind: "safe",
   roomsCleared: 0,
+  secretsFound: 0,
+  secretsTotal: 3,
   dareName: "Personal Space Denied",
   dareProgress: 0,
   dareTarget: 5,
@@ -119,7 +155,7 @@ const ENEMY_GUIDE: Array<{ kind: EnemyKind; name: string; role: string; tip: str
   { kind: "bulwark", name: "Bulwark Drone", role: "Mobile shield projector", tip: "The cyan links mark protected enemies. Destroy the drone first or force its allies outside the shield radius." },
   { kind: "burrower", name: "Scrap Burrower", role: "Subterranean ambusher", tip: "Follow the orange ground trail and leave the marked eruption point before it surfaces. Its scrap field remains dangerous." },
   { kind: "ninja", name: "Signal Ninja", role: "Boss-linked assassin", tip: "The Ninja Master is vulnerable only while at least one of these fast assassins remains alive. Control the pack without clearing it too soon." },
-  { kind: "boss", name: "Broadcast Warden", role: "Three-phase floor boss", tip: "Activate all three pylons first. Watch for phase changes and radial volleys." },
+  { kind: "boss", name: "Broadcast Warden / Static Conductor", role: "Seeded three-phase floor boss", tip: "The Warden fires closed radial volleys. The Static Conductor leaves two opposite safe lanes in its telegraphed signal cage—move into the open channel before it fires." },
 ];
 
 const WEAPON_TACTICS: Record<WeaponId, string> = {
@@ -155,16 +191,32 @@ function routeHint(kind: RoomKind) {
 }
 
 let activeMazeRooms = new Set<number>();
+let activeFloorNavigation: FloorNavigationMap | null = null;
 
-function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerClassId = "knight", contractId: BroadcastContractId = "redline", floorNumber = 1): Game {
+function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerClassId = "knight", contractId: BroadcastContractId = "redline", floorNumber = 1, runMode: "standard" | "daily" = "standard", dailyKey: string | null = null): Game {
   const playerClass = PLAYER_CLASSES[classId];
   const contract = BROADCAST_CONTRACTS[contractId];
   const floor = generateFloor(floorSeed, { roomCount: ROOM_COLS * ROOM_ROWS });
-  const roomKinds = floor.rooms.map((room) => room.kind);
+  const navigation = buildFloorNavigation(floor, { columns: ROOM_COLS, rows: ROOM_ROWS });
+  activeFloorNavigation = navigation;
+  const roomKinds = navigation.roomIdBySlotIndex.map((roomId) =>
+    floor.rooms.find((room) => room.id === roomId)?.kind ?? "safe",
+  );
   if (["elite", "survival", "broadcast"].includes(roomKinds[1])) roomKinds[1] = "ambush";
   if (floorNumber === 2) {
-    roomKinds[4] = "maze";
-    roomKinds[7] = "maze";
+    const reservedRooms = new Set([
+      navigation.slotByRoomId[floor.entryRoomId]!.index,
+      navigation.slotByRoomId[floor.bossRoomId]!.index,
+      ...navigation.pylonRoomIds.map((roomId) => navigation.slotByRoomId[roomId]!.index),
+    ]);
+    const mazeSlots: number[] = [];
+    [4, 7].forEach((target) => {
+      const placement = navigation.placements
+        .filter(({ slot }) => !reservedRooms.has(slot.index) && !mazeSlots.includes(slot.index))
+        .sort((left, right) => Math.abs(left.slot.index - target) - Math.abs(right.slot.index - target) || left.slot.index - right.slot.index)[0];
+      if (placement) mazeSlots.push(placement.slot.index);
+    });
+    mazeSlots.forEach((slot) => { roomKinds[slot] = "maze"; });
   }
   activeMazeRooms = new Set(roomKinds.map((kind, index) => kind === "maze" ? index : -1).filter((index) => index >= 0));
   let nextId = 1;
@@ -202,7 +254,7 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     // Maze enemies stay hidden until the crawler commits to a wrong branch.
     if (kind === "boss") {
       const floorBoss = enemy("boss", tx + 4, ty + 4, index, true);
-      floorBoss.variant = floorNumber === 2 ? "ninja" : "warden";
+      floorBoss.variant = floorNumber === 2 ? "ninja" : floorSeed % 2 === 0 ? "warden" : "conductor";
       if (floorNumber === 2) {
         floorBoss.hp = 390;
         floorBoss.maxHp = 390;
@@ -213,13 +265,14 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     }
     if (["treasure", "elite", "broadcast", "loot"].includes(kind)) chests.push({ x: (tx + 2.5) * TILE, y: (ty + 5.5) * TILE, open: false, openFx: 0 });
   });
-  const pylonRoomIndices = [2, 5, 8];
+  const pylonRoomIndices = navigation.pylonRoomIds.map((roomId) => navigation.slotByRoomId[roomId]!.index);
   const pylons = pylonRoomIndices.map((index) => {
     const col = index % ROOM_COLS;
     const row = Math.floor(index / ROOM_COLS);
     return { x: (col * 8 + 4.5) * TILE, y: (row * 8 + 4.5) * TILE, active: false };
   });
   const dare = chooseAudienceDares(floorSeed, classId === "knight" ? [] : ["close_quarters"], 1)[0] ?? AUDIENCE_DARES[0];
+  const secrets = generateSecretChambers(floorSeed, roomKinds, ROOM_COLS, TILE);
 
   return {
     screen,
@@ -261,10 +314,14 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     burrowHazards: [],
     pylons,
     chests,
+    secrets,
+    secretsFound: 0,
+    secretsTotal: secrets.length,
     groundItems: [],
     groundWeapons: [],
     groundClassArsenal: [],
     groundEquipment: [],
+    groundCursedItems: [],
     explored: new Set(["0"]),
     time: 720,
     score: 0,
@@ -286,6 +343,7 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     shake: 0,
     hitStop: 0,
     floorSeed,
+    navigation,
     roomKinds,
     roomStarted: roomKinds.map((_, index) => index === 0),
     roomCleared: roomKinds.map(() => false),
@@ -310,15 +368,32 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     discoveredEnemies: [],
     maxHype: contract.startingHype,
     roomsCleared: 0,
+    priorRoomsCleared: 0,
+    priorRoomsExplored: 0,
     lastBossPhase: "",
     resultsSaved: false,
     newUnlocks: [],
     sponsorHypeChecked: contract.startingHype,
+    runMode,
+    dailyKey,
+    activeAudienceModifierId: null,
+    audienceModifierRooms: 0,
+    audienceMilestones: [],
+    cursedItemId: null,
+    cursedDropRoomIndex: selectCursedDropRoom(roomKinds, floorSeed),
+    cursedDropSpawned: false,
+    cursedRoomsCleared: 0,
+    cursedItemsCarried: 0,
+    cursedMaxHpLoss: 0,
+    lastCombatTime: 0,
   };
 }
 
 function makeNextFloor(game: Game) {
-  const next = makeGame("playing", Math.floor(Math.random() * 1_000_000_000), game.player.classId, game.contractId, game.floorNumber + 1);
+  const nextSeed = game.runMode === "daily" && game.dailyKey
+    ? dailySeed(`${game.dailyKey}:floor:${game.floorNumber + 1}`)
+    : Math.floor(Math.random() * 1_000_000_000);
+  const next = makeGame("playing", nextSeed, game.player.classId, game.contractId, game.floorNumber + 1, game.runMode, game.dailyKey);
   next.testerMode = game.testerMode;
   next.player = {
     ...next.player,
@@ -336,16 +411,25 @@ function makeNextFloor(game: Game) {
   next.hype = game.hype;
   next.maxHype = game.maxHype;
   next.kills = game.kills;
+  next.priorRoomsCleared = game.priorRoomsCleared + game.roomsCleared;
+  next.priorRoomsExplored = game.priorRoomsExplored + game.explored.size;
   next.upgrades = [...game.upgrades];
   next.equipped = { ...game.equipped };
   next.discoveredEquipment = [...game.discoveredEquipment];
   next.discoveredEnemies = [...game.discoveredEnemies];
+  next.secretsFound = game.secretsFound;
+  next.secretsTotal += game.secretsTotal;
   next.damageTaken = game.damageTaken;
   next.damageBySource = { ...game.damageBySource };
   next.weaponAttacks = { ...game.weaponAttacks };
   next.weaponHits = { ...game.weaponHits };
   next.elapsed = game.elapsed;
   next.sponsorHypeChecked = game.sponsorHypeChecked;
+  next.cursedItemId = game.cursedItemId;
+  next.cursedRoomsCleared = game.cursedRoomsCleared;
+  next.cursedItemsCarried = game.cursedItemsCarried;
+  next.cursedMaxHpLoss = game.cursedMaxHpLoss;
+  next.lastCombatTime = game.elapsed;
   next.message = "FLOOR 02 // SHADOW NETWORK ACQUIRED";
   if (next.testerMode) applyTesterLoadout(next);
   return next;
@@ -359,8 +443,34 @@ function isWallTile(tx: number, ty: number) {
   if (tx <= 0 || ty <= 0 || tx >= MAP_W - 1 || ty >= MAP_H - 1) return true;
   const verticalDoorway = [2, 3, 4, 5, 6].includes(((ty % 8) + 8) % 8);
   const horizontalDoorway = [2, 3, 4, 5, 6].includes(((tx % 8) + 8) % 8);
-  if (tx % 8 === 0 && !verticalDoorway) return true;
-  if (ty % 8 === 0 && !horizontalDoorway) return true;
+  if (tx % 8 === 0) {
+    if (!verticalDoorway) return true;
+    const row = Math.floor(ty / 8);
+    const rightCol = Math.floor(tx / 8);
+    const leftIndex = row * ROOM_COLS + rightCol - 1;
+    const rightIndex = row * ROOM_COLS + rightCol;
+    const leftRoomId = activeFloorNavigation ? roomIdAtSlot(activeFloorNavigation, leftIndex) : null;
+    const rightRoomId = activeFloorNavigation ? roomIdAtSlot(activeFloorNavigation, rightIndex) : null;
+    const hasDoor = Boolean(
+      leftRoomId && connectionInDirection(activeFloorNavigation!, leftRoomId, "east")
+      || rightRoomId && connectionInDirection(activeFloorNavigation!, rightRoomId, "west"),
+    );
+    if (activeFloorNavigation && !hasDoor) return true;
+  }
+  if (ty % 8 === 0) {
+    if (!horizontalDoorway) return true;
+    const col = Math.floor(tx / 8);
+    const bottomRow = Math.floor(ty / 8);
+    const topIndex = (bottomRow - 1) * ROOM_COLS + col;
+    const bottomIndex = bottomRow * ROOM_COLS + col;
+    const topRoomId = activeFloorNavigation ? roomIdAtSlot(activeFloorNavigation, topIndex) : null;
+    const bottomRoomId = activeFloorNavigation ? roomIdAtSlot(activeFloorNavigation, bottomIndex) : null;
+    const hasDoor = Boolean(
+      topRoomId && connectionInDirection(activeFloorNavigation!, topRoomId, "south")
+      || bottomRoomId && connectionInDirection(activeFloorNavigation!, bottomRoomId, "north"),
+    );
+    if (activeFloorNavigation && !hasDoor) return true;
+  }
   const roomCol = Math.floor(tx / 8);
   const roomRow = Math.floor(ty / 8);
   const roomIndex = roomRow * ROOM_COLS + roomCol;
@@ -422,37 +532,62 @@ function roomIndexFor(x: number, y: number) {
   return room.row * ROOM_COLS + room.col;
 }
 
+function directionBetweenSlots(fromIndex: number, toIndex: number): CardinalDirection | null {
+  const delta = toIndex - fromIndex;
+  if (delta === -ROOM_COLS) return "north";
+  if (delta === 1 && Math.floor(fromIndex / ROOM_COLS) === Math.floor(toIndex / ROOM_COLS)) return "east";
+  if (delta === ROOM_COLS) return "south";
+  if (delta === -1 && Math.floor(fromIndex / ROOM_COLS) === Math.floor(toIndex / ROOM_COLS)) return "west";
+  return null;
+}
+
+function connectionFromSlot(game: Game, slotIndex: number, direction: CardinalDirection) {
+  const roomId = roomIdAtSlot(game.navigation, slotIndex);
+  return roomId ? connectionInDirection(game.navigation, roomId, direction) : null;
+}
+
+function doorwayArrival(navigation: FloorNavigationMap, connection: PhysicalDoorConnection, lane = 0) {
+  const reverse = connection.reverseDoorId
+    ? gameConnectionById(navigation, connection.reverseDoorId)
+    : null;
+  const arrivalDirection = reverse?.direction ?? (connection.direction === "north" ? "south" : connection.direction === "south" ? "north" : connection.direction === "east" ? "west" : "east");
+  const left = connection.toSlot.col * 8 * TILE;
+  const top = connection.toSlot.row * 8 * TILE;
+  if (arrivalDirection === "west") return { x: left + 1.25 * TILE, y: top + 4.5 * TILE + lane };
+  if (arrivalDirection === "east") return { x: left + 6.75 * TILE, y: top + 4.5 * TILE + lane };
+  if (arrivalDirection === "north") return { x: left + 4.5 * TILE + lane, y: top + 1.25 * TILE };
+  return { x: left + 4.5 * TILE + lane, y: top + 6.75 * TILE };
+}
+
+function gameConnectionById(navigation: FloorNavigationMap | null, doorId: string) {
+  return navigation?.connections.find((connection) => connection.doorId === doorId) ?? null;
+}
+
 function doorwayLane(id: number) {
   // Three narrow lanes keep a crowd from converging on one exact point while
   // retaining enough clearance for the largest non-boss enemy at the frame.
   return (id % 3 - 1) * 18;
 }
 
-function chaseWaypoint(from: { x: number; y: number; id?: number }, target: { x: number; y: number }) {
+function chaseWaypoint(game: Game, from: { x: number; y: number; id?: number }, target: { x: number; y: number }) {
   const sourceRoom = roomFor(from.x, from.y);
   const targetRoom = roomFor(target.x, target.y);
   if (sourceRoom.col === targetRoom.col && sourceRoom.row === targetRoom.row) return target;
-
-  // An entity's collision radius is wider than a tile seam.  Heading straight
-  // for a point on the far side of a door can therefore catch a corner of the
-  // frame before it is centered in the opening.  Always align with the middle
-  // of the next doorway first, then cross its threshold.
-  if (sourceRoom.col !== targetRoom.col) {
-    const direction = targetRoom.col > sourceRoom.col ? 1 : -1;
-    const doorwayY = (sourceRoom.row * 8 + 4.5) * TILE + doorwayLane(from.id ?? 0);
-    if (Math.abs(from.y - doorwayY) > 2) return { x: from.x, y: doorwayY };
-    return {
-      x: (sourceRoom.col + (direction > 0 ? 1 : 0)) * 8 * TILE + direction * 18,
-      y: doorwayY,
-    };
-  }
-  const direction = targetRoom.row > sourceRoom.row ? 1 : -1;
-  const doorwayX = (sourceRoom.col * 8 + 4.5) * TILE + doorwayLane(from.id ?? 0);
-  if (Math.abs(from.x - doorwayX) > 2) return { x: doorwayX, y: from.y };
-  return {
-    x: doorwayX,
-    y: (sourceRoom.row + (direction > 0 ? 1 : 0)) * 8 * TILE + direction * 18,
-  };
+  const sourceIndex = sourceRoom.row * ROOM_COLS + sourceRoom.col;
+  const targetIndex = targetRoom.row * ROOM_COLS + targetRoom.col;
+  const sourceRoomId = roomIdAtSlot(game.navigation, sourceIndex);
+  const targetRoomId = roomIdAtSlot(game.navigation, targetIndex);
+  const connection = sourceRoomId && targetRoomId
+    ? nextConnectionToward(game.navigation, sourceRoomId, targetRoomId)
+    : null;
+  if (!connection) return { x: from.x, y: from.y };
+  const roomLeft = sourceRoom.col * 8 * TILE;
+  const roomTop = sourceRoom.row * 8 * TILE;
+  const lane = doorwayLane(from.id ?? 0);
+  if (connection.direction === "west") return { x: roomLeft + 20, y: roomTop + 4.5 * TILE + lane };
+  if (connection.direction === "east") return { x: roomLeft + 8 * TILE - 20, y: roomTop + 4.5 * TILE + lane };
+  if (connection.direction === "north") return { x: roomLeft + 4.5 * TILE + lane, y: roomTop + 20 };
+  return { x: roomLeft + 4.5 * TILE + lane, y: roomTop + 8 * TILE - 20 };
 }
 
 function doorwayQueueBlocked(enemy: Enemy, target: { x: number; y: number }, enemies: Enemy[]) {
@@ -522,6 +657,12 @@ function isRoomLocked(game: Game, roomIndex: number) {
 
 function bossGateOpen(game: Game) {
   return game.pylons.every((pylon) => pylon.active) && game.bossAwakenTime <= 0;
+}
+
+function bossDisplayName(boss: Enemy | undefined) {
+  if (boss?.variant === "ninja") return "NINJA MASTER";
+  if (boss?.variant === "conductor") return "STATIC CONDUCTOR";
+  return "BROADCAST WARDEN";
 }
 
 function burst(game: Game, x: number, y: number, color: string, count: number, speed = 80) {
@@ -595,17 +736,37 @@ function displaceEntity(entity: { x: number; y: number }, dx: number, dy: number
 
 function movePlayer(game: Game, vx: number, vy: number, dt: number, radius = 10) {
   const player = game.player;
-  const canEnter = (x: number, y: number) => {
+  const attemptMove = (x: number, y: number) => {
     const currentRoom = roomIndexFor(player.x, player.y);
-    const nextRoom = roomIndexFor(x, y);
-    const trappedInMaze = game.roomKinds[currentRoom] === "maze" && !game.mazeSolved.has(currentRoom) && nextRoom !== currentRoom;
-    return canMove(x, y, radius) && !trappedInMaze && (game.roomKinds[nextRoom] !== "boss" || bossGateOpen(game));
+    const geometricRoom = roomIndexFor(x, y);
+    if (geometricRoom === currentRoom) {
+      if (!canMove(x, y, radius)) return false;
+      player.x = x;
+      player.y = y;
+      return true;
+    }
+    if (game.roomKinds[currentRoom] === "maze" && !game.mazeSolved.has(currentRoom)) return false;
+    const direction = directionBetweenSlots(currentRoom, geometricRoom);
+    const connection = direction ? connectionFromSlot(game, currentRoom, direction) : null;
+    if (!connection) return false;
+    const targetRoom = connection.toSlot.index;
+    if (game.roomKinds[targetRoom] === "boss" && !bossGateOpen(game)) return false;
+    if (targetRoom === geometricRoom && canMove(x, y, radius)) {
+      player.x = x;
+      player.y = y;
+      return true;
+    }
+    const arrival = doorwayArrival(game.navigation, connection);
+    if (!canMove(arrival.x, arrival.y, radius)) return false;
+    player.x = arrival.x;
+    player.y = arrival.y;
+    return true;
   };
 
   const nx = player.x + vx * dt;
-  if (canEnter(nx, player.y)) player.x = nx;
+  attemptMove(nx, player.y);
   const ny = player.y + vy * dt;
-  if (canEnter(player.x, ny)) player.y = ny;
+  attemptMove(player.x, ny);
 }
 
 function separateEnemyFromPlayer(game: Game, enemy: Enemy) {
@@ -680,6 +841,65 @@ function hasEquipment(game: Game, id: EquipmentId) {
   return Object.values(game.equipped).includes(id);
 }
 
+function buildSynergyFor(game: Game) {
+  return activeBuildSynergy({
+    classId: game.player.classId,
+    weaponId: game.player.weaponId,
+    arsenalId: game.player.classArsenalId,
+    upgrades: game.upgrades,
+    equipment: Object.values(game.equipped),
+  });
+}
+
+function audienceModifierFor(game: Game) {
+  return AUDIENCE_MODIFIERS.find((modifier) => modifier.id === game.activeAudienceModifierId) ?? null;
+}
+
+function healPlayer(game: Game, amount: number) {
+  if (amount <= 0 || audienceModifierFor(game)?.disableHealing) return 0;
+  const before = game.player.hp;
+  game.player.hp = Math.min(game.player.maxHp, game.player.hp + amount);
+  return game.player.hp - before;
+}
+
+function finishAudienceModifier(game: Game) {
+  game.enemies.forEach((enemy) => {
+    const applied = enemy.audienceSpeedMultiplier ?? 1;
+    if (applied !== 1) enemy.speed /= applied;
+    enemy.audienceSpeedMultiplier = 1;
+  });
+  game.activeAudienceModifierId = null;
+  game.audienceModifierRooms = 0;
+}
+
+function applyAudienceSpeed(game: Game, enemy: Enemy) {
+  const multiplier = audienceModifierFor(game)?.enemySpeedMultiplier ?? 1;
+  enemy.speed *= multiplier;
+  enemy.audienceSpeedMultiplier = multiplier;
+}
+
+function triggerAudienceVote(game: Game, milestone: number) {
+  const ballot = audienceBallot(game.floorSeed, milestone);
+  const result = resolveAudienceVote(game.floorSeed, milestone, ballot);
+  finishAudienceModifier(game);
+  game.activeAudienceModifierId = result.winner.id;
+  game.audienceModifierRooms = result.winner.durationRooms;
+  game.audienceMilestones.push(milestone);
+  game.enemies.forEach((enemy) => applyAudienceSpeed(game, enemy));
+  addHype(game, 3);
+  game.combatText.push({ x: game.player.x, y: game.player.y - 36, text: `${result.winnerPercent}% VOTE`, life: 1.4, maxLife: 1.4, color: "#ff8fab", scale: 1 });
+  setMessage(game, `AUDIENCE VOTE ${result.winnerPercent}% // ${result.winner.name.toUpperCase()} — ${result.winner.ballot}`);
+}
+
+function settleAudienceRoomClear(game: Game, baseScore: number, baseHype: number) {
+  const modifier = audienceModifierFor(game);
+  game.score += Math.round(baseScore * (modifier?.scoreMultiplier ?? 1));
+  addHype(game, baseHype + (modifier?.hypeOnRoomClear ?? 0));
+  if (!modifier) return;
+  game.audienceModifierRooms = Math.max(0, game.audienceModifierRooms - 1);
+  if (game.audienceModifierRooms === 0) finishAudienceModifier(game);
+}
+
 function enemyIsTargetable(enemy: Enemy) {
   return enemy.burrowPhase !== "underground" && enemy.burrowPhase !== "erupting";
 }
@@ -703,8 +923,10 @@ function damageEnemy(game: Game, target: Enemy, rawDamage: number) {
     }
   }
   const shield = shieldingBulwark(game, target);
-  const damage = rawDamage * (shield ? .55 : 1);
+  const audienceDamage = audienceModifierFor(game)?.playerDamageMultiplier ?? 1;
+  const damage = rawDamage * cursedDamageMultiplier(game.cursedItemId) * buildSynergyFor(game).damageMultiplier * audienceDamage * (shield ? .55 : 1);
   target.hp -= damage;
+  if (damage > 0) game.lastCombatTime = game.elapsed;
   if (shield) {
     burst(game, target.x, target.y, "#76c7dc", 5, 65);
     game.combatText.push({ x: target.x, y: target.y - 31, text: "SHIELDED", life: .42, maxLife: .42, color: "#76c7dc", scale: .75 });
@@ -734,6 +956,7 @@ function spawnRuntimeEnemy(game: Game, kind: EnemyKind, x: number, y: number, ro
     damage: Math.max(4, Math.round(stats.damage * progression)),
     cooldown: .45, flash: .18, windup: 0, recovery: .3, elite: false, homeRoomIndex: roomIndex, summonerId,
   };
+  applyAudienceSpeed(game, spawned);
   game.enemies.push(spawned);
   return spawned;
 }
@@ -796,11 +1019,28 @@ function updateMazeRoom(game: Game, roomIndex: number) {
   game.mazeSolved.add(roomIndex);
   game.roomCleared[roomIndex] = true;
   game.roomsCleared++;
-  game.score += 450;
+  settleAudienceRoomClear(game, 450, 7);
   game.roomClearFx = 1.2;
   game.roomClearRoomIndex = roomIndex;
+  const curse = getCursedItem(game.cursedItemId);
+  if (curse) {
+    game.cursedRoomsCleared++;
+    addHype(game, curse.hypePerRoom);
+    game.score += curse.hypePerRoom * 40;
+  }
+  if (!game.dareComplete && game.activeDareId === "cursed_carrier" && game.cursedItemId) game.dareProgress++;
+  const dare = AUDIENCE_DARES.find((entry) => entry.id === game.activeDareId);
+  if (dare && game.dareProgress >= dare.target && !game.dareComplete) {
+    game.dareComplete = true;
+    addHype(game, dare.hypeReward);
+    game.score += dare.scoreReward;
+  }
+  spawnFloorCurse(game, roomIndex, goal.x, goal.y);
   burst(game, goal.x, goal.y, "#76c7dc", 24, 120);
   setMessage(game, "MAZE SOLVED // ALL ROUTES RELEASED");
+  if ([3, 6, 9].includes(game.roomsCleared) && !game.audienceMilestones.includes(game.roomsCleared)) {
+    triggerAudienceVote(game, game.roomsCleared);
+  }
 }
 
 function selectClassEquipmentDrop(classId: PlayerClassId, rareBoost = false) {
@@ -823,7 +1063,9 @@ function releaseLootAmbush(game: Game, chest: Chest) {
   spawns.forEach(({ kind, tx, ty }) => {
     const stats = enemyStats[kind];
     const hp = Math.round(stats.hp * progression);
-    game.enemies.push({ id:game.nextId++, kind, x:(room.col * 8 + tx) * TILE, y:(room.row * 8 + ty) * TILE, hp, maxHp:hp, speed:stats.speed, damage:Math.round(stats.damage * progression), cooldown:.4 + Math.random() * .8, flash:.2, windup:0, recovery:.25, elite:false, homeRoomIndex:roomIndex });
+    const spawned: Enemy = { id:game.nextId++, kind, x:(room.col * 8 + tx) * TILE, y:(room.row * 8 + ty) * TILE, hp, maxHp:hp, speed:stats.speed, damage:Math.round(stats.damage * progression), cooldown:.4 + Math.random() * .8, flash:.2, windup:0, recovery:.25, elite:false, homeRoomIndex:roomIndex };
+    applyAudienceSpeed(game, spawned);
+    game.enemies.push(spawned);
   });
 }
 
@@ -837,19 +1079,54 @@ function equipItem(game: Game, id: EquipmentId) {
   game.equipped[item.slot] = id;
   if (id === "scrap-plate") {
     game.player.maxHp += 20;
-    game.player.hp += 20;
+    healPlayer(game, 20);
   }
   if (!game.discoveredEquipment.includes(id)) game.discoveredEquipment.push(id);
   return previous;
 }
 
+function addHype(game: Game, amount: number) {
+  game.hype += amount * cursedHypeMultiplier(game.cursedItemId);
+  game.maxHype = Math.max(game.maxHype, game.hype);
+}
+
+function carryCursedItem(game: Game, id: CursedItemId | null) {
+  const previous = game.cursedItemId;
+  if (previous === id) return previous;
+  if (game.cursedMaxHpLoss > 0) {
+    game.player.maxHp += game.cursedMaxHpLoss;
+    game.player.hp = Math.min(game.player.maxHp, game.player.hp);
+    game.cursedMaxHpLoss = 0;
+  }
+  game.cursedItemId = id;
+  if (id === "glass_transmitter") {
+    game.cursedMaxHpLoss = Math.max(1, Math.round(game.player.maxHp * .3));
+    game.player.maxHp = Math.max(1, game.player.maxHp - game.cursedMaxHpLoss);
+    game.player.hp = Math.min(game.player.hp, game.player.maxHp);
+  }
+  if (id && previous === null) game.cursedItemsCarried++;
+  return previous;
+}
+
+function spawnFloorCurse(game: Game, roomIndex: number, x: number, y: number) {
+  if (game.cursedDropSpawned || roomIndex !== game.cursedDropRoomIndex) return;
+  const item = selectCursedItem(`${game.floorSeed}:${game.floorNumber}`);
+  game.cursedDropSpawned = true;
+  game.groundCursedItems.push({ id: game.nextId++, cursedItemId: item.id, x, y, phase: (game.floorSeed % 628) / 100 });
+  burst(game, x, y, "#ff4d9a", 28, 135);
+  setMessage(game, `CURSED RELIC DETECTED // ${item.name.toUpperCase()}`);
+}
+
 function hurtPlayer(game: Game, amount: number, source: string) {
   if (game.testerMode) return;
   if (source === "Void projectile" && hasEquipment(game, "shockweave-vest")) amount *= .75;
+  amount *= audienceModifierFor(game)?.enemyDamageMultiplier ?? 1;
+  amount = cursedIncomingDamage(game.cursedItemId, amount, source);
   amount = Math.round(amount);
   game.player.hp -= amount;
   game.damageTaken += amount;
   game.damageBySource[source] = (game.damageBySource[source] ?? 0) + amount;
+  game.lastCombatTime = game.elapsed;
 }
 
 function applyTesterLoadout(game: Game) {
@@ -871,16 +1148,17 @@ function creditEnemyDeaths(game: Game, dead: Enemy[]) {
   dead.forEach((enemy) => {
     burst(game, enemy.x, enemy.y, enemy.kind === "boss" ? "#ff4d6d" : "#dce7e4", enemy.kind === "boss" ? 34 : 20, 175);
     burst(game, enemy.x, enemy.y, "#f4d35e", enemy.kind === "boss" ? 18 : 7, 90);
-    game.combatText.push({ x: enemy.x, y: enemy.y - (enemy.kind === "boss" ? 44 : 30), text: enemy.kind === "boss" ? enemy.variant === "ninja" ? "NINJA MASTER DOWN" : "WARDEN DOWN" : "K.O.", life: .85, maxLife: .85, color: "#ff8fab", scale: enemy.kind === "boss" ? 1.35 : 1.15 });
+    game.combatText.push({ x: enemy.x, y: enemy.y - (enemy.kind === "boss" ? 44 : 30), text: enemy.kind === "boss" ? `${bossDisplayName(enemy)} DOWN` : "K.O.", life: .85, maxLife: .85, color: "#ff8fab", scale: enemy.kind === "boss" ? 1.35 : 1.15 });
     game.kills++;
-    if (game.upgrades.includes("blood_broadcast") && game.player.hp / game.player.maxHp < .35) game.player.hp = Math.min(game.player.maxHp, game.player.hp + 2);
-    if (hasEquipment(game, "blood-token")) game.player.hp = Math.min(game.player.maxHp, game.player.hp + 3);
-    game.hype += enemy.kind === "boss" ? 15 : 1.5;
-    game.maxHype = Math.max(game.maxHype, game.hype);
+    if (game.upgrades.includes("blood_broadcast") && game.player.hp / game.player.maxHp < .35) healPlayer(game, 2);
+    if (hasEquipment(game, "blood-token")) healPlayer(game, 3);
+    if (game.cursedItemId === "hungry_crown") healPlayer(game, 4);
+    addHype(game, enemy.kind === "boss" ? 15 : 1.5);
+    addHype(game, buildSynergyFor(game).hypeOnKill);
     game.score += Math.round((enemy.kind === "boss" ? 1600 : 140) * game.hype);
     if (enemy.kind === "boss") {
       game.bossDead = true;
-      setMessage(game, enemy.variant === "ninja" ? "NINJA MASTER DOWN // EXIT CHANNEL UNLOCKED" : "WARDEN DOWN // EXIT CHANNEL UNLOCKED");
+      setMessage(game, `${bossDisplayName(enemy)} DOWN // EXIT CHANNEL UNLOCKED`);
     }
   });
 }
@@ -1010,6 +1288,25 @@ function renderGame(ctx: CanvasRenderingContext2D, game: Game) {
     }
     ctx.shadowBlur = 0;
     drawPixelText(ctx, item.kind === "tonic" ? "1" : item.kind === "bomb" ? "2" : "3", item.x, item.y - 18 + bob, color, "center");
+  });
+
+  game.groundCursedItems.forEach((drop) => {
+    const item = getCursedItem(drop.cursedItemId);
+    if (!item) return;
+    const bob = Math.sin(game.elapsed * 4 + drop.phase) * 4;
+    ctx.save();
+    ctx.translate(drop.x, drop.y + bob);
+    ctx.rotate(Math.PI / 4);
+    ctx.shadowColor = "#ff4d9a";
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = "rgba(255,77,154,.25)";
+    ctx.fillRect(-13, -13, 26, 26);
+    ctx.fillStyle = "#ff4d9a";
+    ctx.fillRect(-8, -8, 16, 16);
+    ctx.fillStyle = "#fff3b0";
+    ctx.fillRect(-3, -3, 6, 6);
+    ctx.restore();
+    drawPixelText(ctx, item.name.toUpperCase(), drop.x, drop.y - 25 + bob, "#ff8fab", "center");
   });
 
   game.groundWeapons.forEach((drop) => {
@@ -1759,7 +2056,9 @@ function drawVersusBossHeadshot(ctx: CanvasRenderingContext2D, x: number, y: num
 }
 
 function drawBossVersusSplash(ctx: CanvasRenderingContext2D, game: Game) {
-  const ninja = game.floorNumber === 2;
+  const boss = game.enemies.find((enemy) => enemy.kind === "boss");
+  const ninja = boss?.variant === "ninja";
+  const conductor = boss?.variant === "conductor";
   const progress = 1 - game.bossIntroTime / BOSS_VERSUS_DURATION;
   const slam = 1 - Math.pow(1 - Math.min(1, progress / .28), 3);
   const fade = game.bossIntroTime < .35 ? game.bossIntroTime / .35 : 1;
@@ -1771,12 +2070,12 @@ function drawBossVersusSplash(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
   ctx.fillStyle = "#102f39";
   ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(450, 0); ctx.lineTo(318, HEIGHT); ctx.lineTo(0, HEIGHT); ctx.closePath(); ctx.fill();
-  ctx.fillStyle = "#5c1029";
+  ctx.fillStyle = conductor ? "#563f0f" : "#5c1029";
   ctx.beginPath(); ctx.moveTo(450, 0); ctx.lineTo(WIDTH, 0); ctx.lineTo(WIDTH, HEIGHT); ctx.lineTo(318, HEIGHT); ctx.closePath(); ctx.fill();
   ctx.globalAlpha = fade * .28;
   ctx.strokeStyle = "#d9f7ff"; ctx.lineWidth = 3;
   for (let y = -80; y < HEIGHT + 100; y += 32) { ctx.beginPath(); ctx.moveTo(0, y + progress * 90); ctx.lineTo(330, y - 90 + progress * 90); ctx.stroke(); }
-  ctx.strokeStyle = "#ff8fab";
+  ctx.strokeStyle = conductor ? "#fff3b0" : "#ff8fab";
   for (let y = -80; y < HEIGHT + 100; y += 32) { ctx.beginPath(); ctx.moveTo(WIDTH, y + progress * 90); ctx.lineTo(438, y - 90 + progress * 90); ctx.stroke(); }
   ctx.globalAlpha = fade;
   drawPixelText(ctx, "FINAL ENCOUNTER // LIVE", WIDTH / 2, 38, "#fff3b0", "center");
@@ -1788,8 +2087,8 @@ function drawBossVersusSplash(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.strokeStyle = "#ff4d6d"; ctx.strokeRect(418, 393, 233, 54);
   drawPixelText(ctx, "SUBJECT 404", 233, 414, "#76c7dc", "center");
   drawPixelText(ctx, PLAYER_CLASSES[game.player.classId].name.toUpperCase(), 233, 433, "#d9f7ff", "center");
-  drawPixelText(ctx, ninja ? "SHADOW NETWORK" : "CHANNEL 13", 535, 414, ninja ? "#a78bfa" : "#ff8fab", "center");
-  drawPixelText(ctx, ninja ? "NINJA MASTER" : "BROADCAST WARDEN", 535, 433, "#fff3b0", "center");
+  drawPixelText(ctx, ninja ? "SHADOW NETWORK" : conductor ? "STATIC NETWORK" : "CHANNEL 13", 535, 414, ninja ? "#a78bfa" : conductor ? "#f4d35e" : "#ff8fab", "center");
+  drawPixelText(ctx, bossDisplayName(boss), 535, 433, "#fff3b0", "center");
   const vsScale = .84 + Math.sin(progress * Math.PI * 7) * .06;
   ctx.save();
   ctx.translate(WIDTH / 2, 258); ctx.rotate(-.08); ctx.scale(vsScale, vsScale);
@@ -1882,7 +2181,7 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: Co
   const roomLocked = isRoomLocked(game, currentRoomIndex);
   const roomReleased = game.roomClearFx > 0 && game.roomClearRoomIndex === currentRoomIndex;
   const hazardTiles = game.roomKinds[currentRoomIndex] === "maze" ? [] : hazardTilesForRoom(currentRoomIndex, ROOM_COLS, ROOM_COLS * ROOM_ROWS);
-  const hazardState = hazardStateAt(game.elapsed, currentRoomIndex);
+  const hazardState = hazardStateAt(game.elapsed, currentRoomIndex, cursedHazardWarningReduction(game.cursedItemId));
   if (hazardState !== "dormant") {
     const active = hazardState === "active";
     const hazardPulse = .45 + Math.sin(game.elapsed * (active ? 18 : 9)) * .18;
@@ -1933,6 +2232,10 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: Co
   const pulse = .72 + Math.sin(game.elapsed * 5) * .2;
   const activePylons = game.pylons.filter((pylon) => pylon.active).length;
   const pylonTotal = game.pylons.length;
+  const westConnection = connectionFromSlot(game, currentRoomIndex, "west");
+  const eastConnection = connectionFromSlot(game, currentRoomIndex, "east");
+  const northConnection = connectionFromSlot(game, currentRoomIndex, "north");
+  const southConnection = connectionFromSlot(game, currentRoomIndex, "south");
   const isBossEntranceLocked = (roomIndex: number) =>
     game.roomKinds[roomIndex] === "boss" && !bossGateOpen(game);
   const bossGateLabel = game.bossAwakenTime > 0 ? "POWERING BOSS" : `${activePylons}/${pylonTotal} BOSS`;
@@ -1961,44 +2264,44 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: Co
   ctx.fillStyle = roomLocked ? `rgba(255,77,109,${pulse})` : roomReleased ? `rgba(52,211,153,${pulse})` : `rgba(244,211,94,${pulse})`;
   ctx.strokeStyle = roomLocked ? "#ff8fab" : roomReleased ? "#d8ffe9" : "#fff3b0";
   ctx.lineWidth = roomReleased ? 3 : 2;
-  if (current.col > 0) {
-    const hint = routeHint(game.roomKinds[currentRoomIndex - 1]);
-    const bossEntranceLocked = isBossEntranceLocked(currentRoomIndex - 1);
+  if (westConnection) {
+    const hint = routeHint(game.roomKinds[westConnection.toSlot.index]);
+    const bossEntranceLocked = isBossEntranceLocked(westConnection.toSlot.index);
     ctx.fillRect(roomLeft + 2, doorY - 58, 7, 116);
     ctx.strokeRect(roomLeft + 1, doorY - 62, 13, 124);
     if (bossEntranceLocked) drawPixelText(ctx, `◀ ${bossGateLabel}`, roomLeft + 48, doorY - 12, "#ff8fab", "center");
     else {
       drawPixelText(ctx, `◀ ${hint.icon}`, roomLeft + 28, doorY + 4, hint.color, "center");
-      drawPixelText(ctx, hint.label, roomLeft + 40, doorY - 12, hint.color, "center");
+      drawPixelText(ctx, westConnection.physicallyAdjacent ? hint.label : `LINK ${hint.label}`, roomLeft + 40, doorY - 12, hint.color, "center");
     }
     drawBossGate(bossEntranceLocked, roomLeft + 4, doorY, true);
   }
-  if (current.col < ROOM_COLS - 1) {
-    const hint = routeHint(game.roomKinds[currentRoomIndex + 1]);
-    const bossEntranceLocked = isBossEntranceLocked(currentRoomIndex + 1);
+  if (eastConnection) {
+    const hint = routeHint(game.roomKinds[eastConnection.toSlot.index]);
+    const bossEntranceLocked = isBossEntranceLocked(eastConnection.toSlot.index);
     ctx.fillRect(roomLeft + 8 * TILE - 9, doorY - 58, 7, 116);
     ctx.strokeRect(roomLeft + 8 * TILE - 14, doorY - 62, 13, 124);
     if (bossEntranceLocked) drawPixelText(ctx, `${bossGateLabel} ▶`, roomLeft + 8 * TILE - 48, doorY - 12, "#ff8fab", "center");
     else {
       drawPixelText(ctx, `${hint.icon} ▶`, roomLeft + 8 * TILE - 28, doorY + 4, hint.color, "center");
-      drawPixelText(ctx, hint.label, roomLeft + 8 * TILE - 40, doorY - 12, hint.color, "center");
+      drawPixelText(ctx, eastConnection.physicallyAdjacent ? hint.label : `LINK ${hint.label}`, roomLeft + 8 * TILE - 40, doorY - 12, hint.color, "center");
     }
     drawBossGate(bossEntranceLocked, roomLeft + 8 * TILE - 4, doorY, true);
   }
-  if (current.row > 0) {
-    const hint = routeHint(game.roomKinds[currentRoomIndex - ROOM_COLS]);
-    const bossEntranceLocked = isBossEntranceLocked(currentRoomIndex - ROOM_COLS);
+  if (northConnection) {
+    const hint = routeHint(game.roomKinds[northConnection.toSlot.index]);
+    const bossEntranceLocked = isBossEntranceLocked(northConnection.toSlot.index);
     ctx.fillRect(doorX - 58, roomTop + 2, 116, 7);
     ctx.strokeRect(doorX - 62, roomTop + 1, 124, 13);
-    drawPixelText(ctx, bossEntranceLocked ? `▲ ${bossGateLabel}` : `▲ ${hint.icon} ${hint.label}`, doorX, roomTop + 27, bossEntranceLocked ? "#ff8fab" : hint.color, "center");
+    drawPixelText(ctx, bossEntranceLocked ? `▲ ${bossGateLabel}` : `▲ ${hint.icon} ${northConnection.physicallyAdjacent ? hint.label : `LINK ${hint.label}`}`, doorX, roomTop + 27, bossEntranceLocked ? "#ff8fab" : hint.color, "center");
     drawBossGate(bossEntranceLocked, doorX, roomTop + 4, false);
   }
-  if (current.row < ROOM_ROWS - 1) {
-    const hint = routeHint(game.roomKinds[currentRoomIndex + ROOM_COLS]);
-    const bossEntranceLocked = isBossEntranceLocked(currentRoomIndex + ROOM_COLS);
+  if (southConnection) {
+    const hint = routeHint(game.roomKinds[southConnection.toSlot.index]);
+    const bossEntranceLocked = isBossEntranceLocked(southConnection.toSlot.index);
     ctx.fillRect(doorX - 58, roomTop + 8 * TILE - 9, 116, 7);
     ctx.strokeRect(doorX - 62, roomTop + 8 * TILE - 14, 124, 13);
-    drawPixelText(ctx, bossEntranceLocked ? `▼ ${bossGateLabel}` : `▼ ${hint.icon} ${hint.label}`, doorX, roomTop + 8 * TILE - 20, bossEntranceLocked ? "#ff8fab" : hint.color, "center");
+    drawPixelText(ctx, bossEntranceLocked ? `▼ ${bossGateLabel}` : `▼ ${hint.icon} ${southConnection.physicallyAdjacent ? hint.label : `LINK ${hint.label}`}`, doorX, roomTop + 8 * TILE - 20, bossEntranceLocked ? "#ff8fab" : hint.color, "center");
     drawBossGate(bossEntranceLocked, doorX, roomTop + 8 * TILE - 4, false);
   }
   ctx.restore();
@@ -2022,6 +2325,37 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: Co
     drawPixelText(ctx, "EXITS RELEASED", centerX, centerY + 11, "#34d399", "center");
     ctx.restore();
   }
+
+  game.secrets.forEach((secret) => {
+    if (secret.roomIndex !== currentRoomIndex) return;
+    const nearby = dist(secret, game.player) < 92;
+    const signalPulse = .45 + Math.sin(game.elapsed * 8 + secret.roomIndex) * .25;
+    ctx.save();
+    ctx.translate(secret.x, secret.y);
+    ctx.strokeStyle = secret.discovered ? "#f4d35e" : nearby ? "#76c7dc" : `rgba(118,199,220,${signalPulse})`;
+    ctx.lineWidth = secret.discovered ? 3 : 1.5;
+    ctx.shadowColor = secret.discovered ? "#f4d35e" : "#76c7dc";
+    ctx.shadowBlur = secret.discovered ? 12 : nearby ? 7 : 0;
+    const vertical = secret.wall === "east" || secret.wall === "west";
+    ctx.beginPath();
+    if (vertical) {
+      ctx.moveTo(0, -13); ctx.lineTo(-4, -5); ctx.lineTo(3, 1); ctx.lineTo(-3, 7); ctx.lineTo(1, 14);
+    } else {
+      ctx.moveTo(-13, 0); ctx.lineTo(-5, -4); ctx.lineTo(1, 3); ctx.lineTo(7, -3); ctx.lineTo(14, 1);
+    }
+    ctx.stroke();
+    if (secret.discovered) {
+      ctx.fillStyle = "rgba(244,211,94,.22)";
+      if (vertical) ctx.fillRect(-5, -17, 10, 34);
+      else ctx.fillRect(-17, -5, 34, 10);
+    } else if (nearby) {
+      ctx.fillStyle = "#d9f7ff";
+      ctx.fillRect(-2, -2, 4, 4);
+    }
+    ctx.restore();
+    if (!secret.discovered && nearby) drawPixelText(ctx, "SIGNAL LEAK", secret.x, secret.y - 18, "#76c7dc", "center");
+    if (secret.discovered) drawPixelText(ctx, "SECRET", secret.x, secret.y - 18, "#f4d35e", "center");
+  });
 
   const safeX = SAFE_X;
   const safeY = SAFE_Y;
@@ -2111,6 +2445,26 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: Co
     drawPixelText(ctx, item.kind === "tonic" ? "1" : item.kind === "bomb" ? "2" : "3", item.x, item.y - 18 + bob, color, "center");
   });
 
+  game.groundCursedItems.forEach((drop) => {
+    if (!isInActiveRoom(drop)) return;
+    const item = getCursedItem(drop.cursedItemId);
+    if (!item) return;
+    const bob = Math.sin(game.elapsed * 4 + drop.phase) * 4;
+    ctx.save();
+    ctx.translate(drop.x, drop.y + bob);
+    ctx.rotate(Math.PI / 4);
+    ctx.shadowColor = "#ff4d9a";
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = "rgba(255,77,154,.25)";
+    ctx.fillRect(-13, -13, 26, 26);
+    ctx.fillStyle = "#ff4d9a";
+    ctx.fillRect(-8, -8, 16, 16);
+    ctx.fillStyle = "#fff3b0";
+    ctx.fillRect(-3, -3, 6, 6);
+    ctx.restore();
+    drawPixelText(ctx, item.name.toUpperCase(), drop.x, drop.y - 25 + bob, "#ff8fab", "center");
+  });
+
   game.groundWeapons.forEach((drop) => {
     if (!isInActiveRoom(drop)) return;
     const bob = Math.sin(game.elapsed * 4 + drop.phase) * 3;
@@ -2187,6 +2541,25 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: Co
     ctx.setLineDash([]);
     drawPixelText(ctx, "REST MODE // INVINCIBLE", ninjaBoss.x, ninjaBoss.y - 52, "#d8ccff", "center");
   });
+  game.enemies.filter((enemy) => enemy.kind === "boss" && enemy.variant === "conductor" && enemy.hp > 0 && (enemy.specialTime ?? 0) > 0).forEach((conductor) => {
+    const pattern = conductor.specialPattern ?? 0;
+    const laneAngle = pattern * Math.PI / 6 + game.elapsed * .08;
+    const telegraph = Math.max(0, conductor.specialTime ?? 0);
+    ctx.save();
+    ctx.strokeStyle = comfort.highContrastTelegraphs ? "#ffffff" : "#f4d35e";
+    ctx.lineWidth = comfort.highContrastTelegraphs ? 5 : 3;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.arc(conductor.x, conductor.y, 58 + Math.sin(game.elapsed * 15) * 4, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = "#34d399";
+    ctx.lineWidth = 8;
+    ctx.beginPath();
+    ctx.moveTo(conductor.x - Math.cos(laneAngle) * 105, conductor.y - Math.sin(laneAngle) * 105);
+    ctx.lineTo(conductor.x + Math.cos(laneAngle) * 105, conductor.y + Math.sin(laneAngle) * 105);
+    ctx.stroke();
+    ctx.restore();
+    drawPixelText(ctx, `OPEN CHANNEL // ${telegraph.toFixed(1)}s`, conductor.x, conductor.y - 67, "#d8ffe9", "center");
+  });
   drawPlayerSprite(ctx, game, shakeScale);
 
   game.combatText.forEach((popup) => {
@@ -2221,10 +2594,13 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: Co
   const nearbyWeapon = game.groundWeapons.find((drop) => dist(drop, p) < 42);
   const nearbyClassArsenal = game.groundClassArsenal.find((drop) => dist(drop, p) < 42);
   const nearbyEquipment = game.groundEquipment.find((drop) => dist(drop, p) < 42);
-  if (nearbyEquipment) prompt = `[HOLD F] EQUIP ${EQUIPMENT[nearbyEquipment.equipmentId].name.toUpperCase()}`;
+  const nearbyCurse = game.groundCursedItems.find((drop) => dist(drop, p) < 42);
+  if (nearbyCurse) prompt = `[HOLD F] CARRY ${getCursedItem(nearbyCurse.cursedItemId)?.name.toUpperCase()}`;
+  else if (nearbyEquipment) prompt = `[HOLD F] EQUIP ${EQUIPMENT[nearbyEquipment.equipmentId].name.toUpperCase()}`;
   else if (nearbyWeapon) prompt = `[F] EQUIP ${getWeapon(nearbyWeapon.weaponId).name.toUpperCase()}`;
   else if (nearbyClassArsenal) prompt = `[F] EQUIP ${CLASS_ARSENAL[nearbyClassArsenal.arsenalId].name.toUpperCase()}`;
   else if (nearbyItem) prompt = `[F] PICK UP ${nearbyItem.kind.toUpperCase()}`;
+  else if (game.secrets.some((secret) => !secret.discovered && dist(secret, p) < 46)) prompt = "[F] TRACE SIGNAL LEAK";
   else if (game.pylons.some((x) => !x.active && dist(x, p) < 42)) prompt = "[F] JACK IN";
   else if (game.chests.some((x) => !x.open && dist(x, p) < 42)) prompt = "[F] CRACK CACHE";
   else if (gateOpen && Math.hypot(p.x - EXIT_X, p.y - EXIT_Y) < 44) prompt = "[F] EXIT FLOOR";
@@ -2268,8 +2644,8 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: Co
     ctx.fillRect(barX + 2, barY + 2, barWidth - 4, 8);
     ctx.fillStyle = "#ff4d6d";
     ctx.fillRect(barX + 2, barY + 2, (barWidth - 4) * Math.max(0, boss.hp / boss.maxHp), 8);
-    drawPixelText(ctx, boss.variant === "ninja" ? "NINJA MASTER" : "BROADCAST WARDEN", barX, barY - 5, "#fff3b0");
-    drawPixelText(ctx, boss.variant === "ninja" ? (boss.restTime ?? 0) > 0 ? "REST MODE" : "SHADOW ASSAULT" : phase!.name.toUpperCase(), barX + barWidth, barY - 5, boss.variant === "ninja" ? "#a78bfa" : "#ff8fab", "right");
+    drawPixelText(ctx, bossDisplayName(boss), barX, barY - 5, "#fff3b0");
+    drawPixelText(ctx, boss.variant === "ninja" ? (boss.restTime ?? 0) > 0 ? "REST MODE" : "SHADOW ASSAULT" : boss.variant === "conductor" && (boss.specialTime ?? 0) > 0 ? "SIGNAL CAGE" : phase!.name.toUpperCase(), barX + barWidth, barY - 5, boss.variant === "ninja" ? "#a78bfa" : boss.variant === "conductor" ? "#f4d35e" : "#ff8fab", "right");
   }
 
   if (game.bossAwakenTime > 0) {
@@ -2280,7 +2656,8 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: Co
     ctx.lineWidth = 2;
     ctx.strokeRect(184, 212, 400, 66);
     drawPixelText(ctx, "FINAL SIGNAL ACCEPTED", WIDTH / 2, 234, "#fff3b0", "center");
-    drawPixelText(ctx, game.floorNumber === 2 ? "SHADOW SEAL // BREAKING" : "WARDEN CORE // POWERING", WIDTH / 2, 254, game.floorNumber === 2 ? "#a78bfa" : "#ff8fab", "center");
+    const wakingBoss = game.enemies.find((enemy) => enemy.kind === "boss");
+    drawPixelText(ctx, wakingBoss?.variant === "ninja" ? "SHADOW SEAL // BREAKING" : wakingBoss?.variant === "conductor" ? "STATIC ARRAY // POWERING" : "WARDEN CORE // POWERING", WIDTH / 2, 254, wakingBoss?.variant === "ninja" ? "#a78bfa" : wakingBoss?.variant === "conductor" ? "#f4d35e" : "#ff8fab", "center");
     ctx.fillStyle = "#3a2d14";
     ctx.fillRect(256, 264, 256, 5);
     ctx.fillStyle = "#f4d35e";
@@ -2345,7 +2722,8 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
       if (boss?.variant === "ninja") {
         summonSignalNinjas(game, boss);
         setMessage(game, "NINJA MASTER LIVE // KEEP ONE ASSASSIN ALIVE");
-      } else setMessage(game, "WARDEN LIVE // SURVIVE THE BROADCAST");
+      } else if (boss?.variant === "conductor") setMessage(game, "STATIC CONDUCTOR LIVE // WATCH FOR OPEN CHANNELS");
+      else setMessage(game, "WARDEN LIVE // SURVIVE THE BROADCAST");
       if (boss) burst(game, boss.x, boss.y, boss.variant === "ninja" ? "#a78bfa" : "#ff8fab", 24, 145);
     }
     return;
@@ -2394,7 +2772,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
     if (typeof reward.score === "number") game.score += reward.score;
     if (typeof reward.maxHealth === "number") {
       game.player.maxHp += reward.maxHealth;
-      game.player.hp += reward.maxHealth;
+      healPlayer(game, reward.maxHealth);
     }
     if (threshold.id === "sponsor_cache") {
       if (game.player.classId === "knight") {
@@ -2425,8 +2803,15 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
     }
   }
   p.moving = Boolean(mx || my);
-  const equipmentSpeed = hasEquipment(game, "runner-boots") ? 1.1 : 1;
-  movePlayer(game, mx * p.speed * equipmentSpeed, my * p.speed * equipmentSpeed, dt, 9);
+  const equipmentSpeed = (hasEquipment(game, "runner-boots") ? 1.1 : 1) * buildSynergyFor(game).speedMultiplier;
+  const cursedSpeed = cursedMoveSpeedMultiplier(game.cursedItemId);
+  movePlayer(game, mx * p.speed * equipmentSpeed * cursedSpeed, my * p.speed * equipmentSpeed * cursedSpeed, dt, 9);
+  if (!game.testerMode && game.cursedItemId === "hungry_crown" && game.elapsed - game.lastCombatTime > 4 && p.hp > 1) {
+    const drain = Math.min(p.hp - 1, .5 * dt);
+    p.hp -= drain;
+    game.damageTaken += drain;
+    game.damageBySource["Hungry Crown"] = (game.damageBySource["Hungry Crown"] ?? 0) + drain;
+  }
   if (p.moving && p.stepTimer <= 0) {
     p.stepTimer = .13;
     burst(game, p.x - p.dirX * 7, p.y - p.dirY * 7 + 10, "#607068", 2, 24);
@@ -2438,6 +2823,13 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
   if (currentRoomIndex !== game.currentRoomIndex) {
     game.currentRoomIndex = currentRoomIndex;
     game.roomStarted[currentRoomIndex] = true;
+    if (game.cursedItemId === "idol_open_mic") {
+      const col = currentRoomIndex % ROOM_COLS;
+      const row = Math.floor(currentRoomIndex / ROOM_COLS);
+      [[col - 1, row], [col + 1, row], [col, row - 1], [col, row + 1]].forEach(([nearCol, nearRow]) => {
+        if (nearCol >= 0 && nearCol < ROOM_COLS && nearRow >= 0 && nearRow < ROOM_ROWS) game.roomStarted[nearRow * ROOM_COLS + nearCol] = true;
+      });
+    }
     if (currentRoomKind === "boss" && bossGateOpen(game)) {
       const boss = game.enemies.find((enemy) => enemy.kind === "boss");
       game.bossEngaged = false;
@@ -2450,7 +2842,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
         burst(game, boss.x, boss.y, boss.variant === "ninja" ? "#a78bfa" : "#ff4d6d", 36, 170);
       }
       game.shake = .55;
-      setMessage(game, boss?.variant === "ninja" ? "SHADOW NETWORK LIVE // THE NINJA MASTER" : "LIVE FROM THE DEPTHS // THE BROADCAST WARDEN");
+      setMessage(game, `LIVE FROM THE DEPTHS // THE ${bossDisplayName(boss)}`);
     } else if (currentRoomKind === "boss") {
       setMessage(game, `${game.floorNumber === 2 ? "NINJA MASTER SEALED" : "WARDEN DORMANT"} // ${game.pylons.length - activePylonCount} SIGNAL${game.pylons.length - activePylonCount === 1 ? "" : "S"} MISSING`);
     } else setMessage(game, `${currentRoomKind.toUpperCase()} ENCOUNTER // ${encounterLocks(currentRoomKind) ? "DOORS LOCKING" : "SIGNAL ACQUIRED"}`);
@@ -2459,9 +2851,11 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
   if (!game.explored.has(roomId)) {
     game.explored.add(roomId);
     game.score += 120;
-    game.hype += 3;
-    game.maxHype = Math.max(game.maxHype, game.hype);
-    if (currentRoomKind === "boss" && (game.bossEngaged || game.bossIntroTime > 0)) setMessage(game, game.floorNumber === 2 ? "SHADOW NETWORK LIVE // THE NINJA MASTER" : "LIVE FROM THE DEPTHS // THE BROADCAST WARDEN");
+    addHype(game, 3);
+    if (currentRoomKind === "boss" && (game.bossEngaged || game.bossIntroTime > 0)) {
+      const boss = game.enemies.find((enemy) => enemy.kind === "boss");
+      setMessage(game, `LIVE FROM THE DEPTHS // THE ${bossDisplayName(boss)}`);
+    }
     else setMessage(game, `NEW SIGNAL ZONE // ROOM ${game.explored.size} OF ${ROOM_COLS * ROOM_ROWS}`);
   }
 
@@ -2469,7 +2863,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
   if (currentRoomKind === "maze") updateMazeRoom(game, currentRoomIndex);
   const currentHazardTiles = currentRoomKind === "maze" ? [] : hazardTilesForRoom(currentRoomIndex, ROOM_COLS, ROOM_COLS * ROOM_ROWS);
   if (
-    hazardStateAt(game.elapsed, currentRoomIndex) === "active" &&
+    hazardStateAt(game.elapsed, currentRoomIndex, cursedHazardWarningReduction(game.cursedItemId)) === "active" &&
     pointIsOnHazard(p.x, p.y, currentHazardTiles, TILE) &&
     p.invuln <= 0
   ) {
@@ -2501,7 +2895,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
   const safe = { x: SAFE_X, y: SAFE_Y };
   if (!game.safeUsed && dist(safe, p) < 28) {
     game.safeUsed = true;
-    p.hp = p.maxHp;
+    healPlayer(game, p.maxHp - p.hp);
     p.potions += 1;
     game.score += 200;
     game.upgradeChoices = chooseSafeRoomUpgrades(game.floorSeed, [], 8)
@@ -2528,7 +2922,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
     if (sharesPlayerRoom && !game.discoveredEnemies.includes(enemy.kind)) game.discoveredEnemies.push(enemy.kind);
     if (enemy.kind === "boss" && (activePylons < game.pylons.length || !game.bossEngaged)) return;
     const navigationGoal = sharesPlayerRoom ? enemyApproachTarget(enemy, p) : p;
-    const chaseTarget = chaseWaypoint(enemy, navigationGoal);
+    const chaseTarget = chaseWaypoint(game, enemy, navigationGoal);
     const dx = chaseTarget.x - enemy.x;
     const dy = chaseTarget.y - enemy.y;
     const navigationDistance = Math.hypot(dx, dy);
@@ -2590,7 +2984,16 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
       }
     }
     if (!sharesPlayerRoom) {
-      if (doorwayQueueBlocked(enemy, p, game.enemies)) return;
+      const sourceRoomId = roomIdAtSlot(game.navigation, enemyRoomIndex);
+      const playerRoomId = roomIdAtSlot(game.navigation, currentRoomIndex);
+      const connection = sourceRoomId && playerRoomId ? nextConnectionToward(game.navigation, sourceRoomId, playerRoomId) : null;
+      if (connection && navigationDistance < 24) {
+        const arrival = doorwayArrival(game.navigation, connection, doorwayLane(enemy.id));
+        enemy.x = arrival.x;
+        enemy.y = arrival.y;
+        return;
+      }
+      if (connection?.physicallyAdjacent && doorwayQueueBlocked(enemy, chaseTarget, game.enemies)) return;
       moveEntity(enemy, nx * enemy.speed, ny * enemy.speed, dt, enemy.kind === "boss" ? 17 : 11);
       return;
     }
@@ -2761,6 +3164,36 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
           burst(game, enemy.x, enemy.y, phase.id === "warden_dead_air" ? "#ffffff" : "#ff4d6d", 42, 210);
         }
       }
+      if (enemy.kind === "boss" && enemy.variant === "conductor") {
+        if ((enemy.specialTime ?? 0) > 0) {
+          enemy.specialTime = Math.max(0, (enemy.specialTime ?? 0) - dt);
+          if (enemy.specialTime === 0) {
+            const phase = bossPhaseForHealth(enemy.hp, enemy.maxHp);
+            const pattern = enemy.specialPattern ?? 0;
+            const laneAngle = pattern * Math.PI / 6 + game.elapsed * .08;
+            const speed = phase.id === "warden_dead_air" ? 175 : phase.id === "warden_overload" ? 155 : 138;
+            for (let index = 0; index < 12; index++) {
+              if (index === 0 || index === 6) continue;
+              const angle = laneAngle + index * Math.PI / 6;
+              game.projectiles.push({ x: enemy.x, y: enemy.y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: 2.6, damage: 11, owner: "enemy" });
+            }
+            enemy.cooldown = phase.id === "warden_dead_air" ? 1.1 : 1.55;
+            game.shake = Math.max(game.shake, .3);
+            burst(game, enemy.x, enemy.y, "#f4d35e", 24, 150);
+            setMessage(game, "SIGNAL CAGE FIRED // OPEN CHANNEL HOLDS");
+          }
+          return;
+        }
+        if (enemy.cooldown <= 0 && distance > 54) {
+          const phase = bossPhaseForHealth(enemy.hp, enemy.maxHp);
+          enemy.specialPattern = ((enemy.specialPattern ?? -1) + 1) % 6;
+          enemy.specialTime = phase.id === "warden_dead_air" ? .55 : phase.id === "warden_overload" ? .7 : .9;
+          enemy.cooldown = enemy.specialTime + 1.2;
+          enemy.recovery = enemy.specialTime;
+          setMessage(game, "STATIC CONDUCTOR // FIND THE OPEN CHANNEL");
+          return;
+        }
+      }
       const reach = enemy.kind === "boss" ? 34 : enemy.kind === "mimic" ? 28 : 24;
       if (enemy.windup > 0) {
         enemy.windup -= dt;
@@ -2780,7 +3213,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
         enemy.cooldown = enemy.kind === "boss" ? 1.05 : 1.25;
         return;
       }
-      if (enemy.kind === "boss" && enemy.variant !== "ninja" && enemy.cooldown <= .05 && Math.random() < .06) {
+      if (enemy.kind === "boss" && enemy.variant === "warden" && enemy.cooldown <= .05 && Math.random() < .06) {
         const phase = bossPhaseForHealth(enemy.hp, enemy.maxHp);
         const count = phase.id === "warden_dead_air" ? 12 : phase.id === "warden_overload" ? 10 : 8;
         for (let i = 0; i < count; i++) {
@@ -2882,9 +3315,17 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
     game.roomClearFx = 1.65;
     game.roomClearRoomIndex = encounterIndex;
     game.roomsCleared++;
-    game.score += encounterKind === "boss" ? 1800 : encounterKind === "elite" ? 650 : 320;
-    game.hype += encounterKind === "elite" ? 12 : 7;
-    game.maxHype = Math.max(game.maxHype, game.hype);
+    const roomScore = encounterKind === "boss" ? 1800 : encounterKind === "elite" ? 650 : 320;
+    settleAudienceRoomClear(game, roomScore, encounterKind === "elite" ? 12 : 7);
+    const carriedCurse = getCursedItem(game.cursedItemId);
+    if (carriedCurse) {
+      game.cursedRoomsCleared++;
+      addHype(game, carriedCurse.hypePerRoom);
+      game.score += carriedCurse.hypePerRoom * 40;
+      game.combatText.push({ x: p.x, y: p.y - 38, text: `CURSE +${carriedCurse.hypePerRoom} HYPE`, life: .9, maxLife: .9, color: "#ff8fab", scale: .9 });
+    }
+    const clearedRoom = roomFor(p.x, p.y);
+    spawnFloorCurse(game, encounterIndex, (clearedRoom.col * 8 + 4.5) * TILE, (clearedRoom.row * 8 + 4.5) * TILE);
     if (["elite", "broadcast", "treasure"].includes(encounterKind)) {
       const room = roomFor(p.x, p.y);
       if (p.classId === "knight") {
@@ -2897,15 +3338,19 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
         if (drop) game.groundClassArsenal.push({ id: game.nextId++, arsenalId: drop.id, x: (room.col * 8 + 4.5) * TILE, y: (room.row * 8 + 4.5) * TILE, phase: Math.random() * 6 });
       }
     }
-    if (!game.dareComplete && game.activeDareId !== "close_quarters" && game.activeDareId !== "bomb_double") game.dareProgress++;
+    if (!game.dareComplete && game.activeDareId === "cursed_carrier" && game.cursedItemId) game.dareProgress++;
+    else if (!game.dareComplete && !["close_quarters", "bomb_double", "cursed_carrier"].includes(game.activeDareId)) game.dareProgress++;
     const dare = AUDIENCE_DARES.find((entry) => entry.id === game.activeDareId);
     if (dare && game.dareProgress >= dare.target && !game.dareComplete) {
       game.dareComplete = true;
-      game.hype += dare.hypeReward;
+      addHype(game, dare.hypeReward);
       game.score += dare.scoreReward;
       setMessage(game, `DARE COMPLETE // ${dare.name.toUpperCase()} +${dare.scoreReward}`);
     } else {
       setMessage(game, `${encounterKind.toUpperCase()} CLEARED // DOORS RELEASED`);
+    }
+    if ([3, 6, 9].includes(game.roomsCleared) && !game.audienceMilestones.includes(game.roomsCleared)) {
+      triggerAudienceVote(game, game.roomsCleared);
     }
   }
 
@@ -2942,14 +3387,19 @@ function makeHud(game: Game): Hud {
     weaponName: game.player.classId === "knight" ? getWeapon(game.player.weaponId).name : CLASS_ARSENAL[game.player.classArsenalId].name,
     ammo: game.player.classId === "archer" ? game.player.classResource : game.player.ammo,
     nearbyEquipmentId: game.groundEquipment.find((drop) => dist(drop, game.player) < 42)?.equipmentId ?? null,
+    nearbyCursedItemId: game.groundCursedItems.find((drop) => dist(drop, game.player) < 42)?.cursedItemId ?? null,
     equipmentNames: (Object.values(game.equipped).filter(Boolean) as EquipmentId[]).map((id) => EQUIPMENT[id].name),
+    cursedItemId: game.cursedItemId,
+    cursedRoomsCleared: game.cursedRoomsCleared,
     roomKind: game.roomKinds[game.currentRoomIndex] ?? "safe",
     roomsCleared: game.roomsCleared,
+    secretsFound: game.secretsFound,
+    secretsTotal: game.secretsTotal,
     dareName: dare.name,
     dareProgress: game.dareProgress,
     dareTarget: dare.target,
     message: game.messageTime > 0 ? game.message : "THE SIGNAL HUMS. KEEP MOVING.",
-    objective: pylons < 3 ? `Activate ${3 - pylons} signal pylon${3 - pylons === 1 ? "" : "s"}` : game.bossDead ? "Reach the exit gate" : game.floorNumber === 2 ? "Defeat the Ninja Master" : "Defeat the Broadcast Warden",
+    objective: pylons < 3 ? `Activate ${3 - pylons} signal pylon${3 - pylons === 1 ? "" : "s"}` : game.bossDead ? "Reach the exit gate" : `Defeat the ${bossDisplayName(game.enemies.find((enemy) => enemy.kind === "boss"))}`,
   };
 }
 
@@ -2958,9 +3408,9 @@ function runStatsFor(game: Game): RunStats {
   return {
     won: game.screen === "won",
     elapsedSeconds: Math.round(game.elapsed),
-    roomsDiscovered: game.explored.size,
-    totalRooms: game.roomKinds.length,
-    roomsCleared: game.roomsCleared,
+    roomsDiscovered: game.priorRoomsExplored + game.explored.size,
+    totalRooms: game.floorNumber * game.roomKinds.length,
+    roomsCleared: game.priorRoomsCleared + game.roomsCleared,
     enemiesDefeated: game.kills,
     elitesDefeated,
     bossesDefeated: game.bossDead ? game.floorNumber : Math.max(0, game.floorNumber - 1),
@@ -2968,10 +3418,11 @@ function runStatsFor(game: Game): RunStats {
     deaths: game.screen === "lost" && game.player.hp <= 0 ? 1 : 0,
     highestHype: Math.round(game.maxHype),
     daresCompleted: game.dareComplete ? 1 : 0,
-    secretsFound: 0,
+    secretsFound: game.secretsFound,
     lootValue: game.upgrades.length * 250 + game.discoveredEquipment.length * 180 + (game.groundWeapons.length + game.groundClassArsenal.length) * 120,
     remainingSeconds: Math.round(game.time),
     favoriteWeapon: game.player.classId === "knight" ? getWeapon(game.player.weaponId).name : CLASS_ARSENAL[game.player.classArsenalId].name,
+    cursedItemsCarried: game.cursedItemsCarried,
   };
 }
 
@@ -2993,6 +3444,8 @@ export default function Home() {
   const [starterWeapon, setStarterWeapon] = useState<WeaponId>("cleaver");
   const [selectedClass, setSelectedClass] = useState<PlayerClassId>("knight");
   const [selectedContract, setSelectedContract] = useState<BroadcastContractId>("redline");
+  const [selectedRunMode, setSelectedRunMode] = useState<"standard" | "daily">("standard");
+  const [runHistory, setRunHistory] = useState<RunHistoryEntry[]>([]);
   const [controlMode, setControlMode] = useState<ControlMode>("keyboard");
   const controlModeRef = useRef<ControlMode>("keyboard");
   const [comfortSettings, setComfortSettings] = useState<ComfortSettings>(DEFAULT_COMFORT_SETTINGS);
@@ -3028,28 +3481,61 @@ export default function Home() {
       const stats = runStatsFor(game);
       const summary = summarizeRun(stats);
       game.score = Math.max(game.score, summary.score);
-      const lifetimeRuns = Number(localStorage.getItem("signal-depths-lifetime-runs") || 0) + 1;
-      const lifetimeKills = Number(localStorage.getItem("signal-depths-lifetime-kills") || 0) + game.kills;
-      const storedUnlocks = JSON.parse(localStorage.getItem("signal-depths-unlocks") || "[]") as string[];
+      const lifetimeRuns = storedNumber(localStorage.getItem("signal-depths-lifetime-runs")) + 1;
+      const lifetimeKills = storedNumber(localStorage.getItem("signal-depths-lifetime-kills")) + game.kills;
+      const storedUnlocks = parseStoredArray(localStorage.getItem("signal-depths-unlocks"), [], (value): value is string =>
+        typeof value === "string" && PERMANENT_UNLOCKS.some((unlock) => unlock.id === value)
+      );
       const earned = newlyEarnedUnlocks({ ...stats, lifetimeRuns, lifetimeKills }, storedUnlocks);
       game.newUnlocks = earned.map((unlock) => unlock.name);
       localStorage.setItem("signal-depths-lifetime-runs", String(lifetimeRuns));
       localStorage.setItem("signal-depths-lifetime-kills", String(lifetimeKills));
       localStorage.setItem("signal-depths-unlocks", JSON.stringify([...storedUnlocks, ...earned.map((unlock) => unlock.id)]));
       const merge = <T,>(stored: T[], found: T[]) => [...new Set([...stored, ...found])];
-      const storedWeapons = JSON.parse(localStorage.getItem("signal-depths-discovered-weapons") || "[\"cleaver\"]") as WeaponId[];
-      const storedEquipment = JSON.parse(localStorage.getItem("signal-depths-discovered-equipment") || "[]") as EquipmentId[];
-      const storedEnemies = JSON.parse(localStorage.getItem("signal-depths-discovered-enemies") || "[]") as EnemyKind[];
+      const storedWeapons = parseStoredArray(localStorage.getItem("signal-depths-discovered-weapons"), ["cleaver" as WeaponId], (value): value is WeaponId =>
+        typeof value === "string" && value in WEAPONS
+      );
+      const storedEquipment = parseStoredArray(localStorage.getItem("signal-depths-discovered-equipment"), [], (value): value is EquipmentId =>
+        typeof value === "string" && EQUIPMENT_IDS.includes(value as EquipmentId)
+      );
+      const storedEnemies = parseStoredArray(localStorage.getItem("signal-depths-discovered-enemies"), [], (value): value is EnemyKind =>
+        typeof value === "string" && value in enemyStats
+      );
       localStorage.setItem("signal-depths-discovered-weapons", JSON.stringify(merge(storedWeapons, [game.player.weaponId])));
       localStorage.setItem("signal-depths-discovered-equipment", JSON.stringify(merge(storedEquipment, game.discoveredEquipment)));
       localStorage.setItem("signal-depths-discovered-enemies", JSON.stringify(merge(storedEnemies, game.discoveredEnemies)));
+      const endedAt = new Date().toISOString();
+      const boss = game.floorNumber === 2
+        ? "Ninja Master"
+        : game.floorSeed % 2 === 0 ? "Broadcast Warden" : "Static Conductor";
+      const historyEntry: RunHistoryEntry = {
+        id: `${game.runMode}:${game.dailyKey ?? game.floorSeed}:${endedAt}`,
+        endedAt,
+        mode: game.runMode,
+        ...(game.dailyKey ? { dailyKey: game.dailyKey } : {}),
+        classId: game.player.classId,
+        won: game.screen === "won",
+        score: Math.floor(game.score * game.scoreMultiplier),
+        grade: summary.grade,
+        roomsCleared: game.priorRoomsCleared + game.roomsCleared,
+        kills: game.kills,
+        maxHype: game.maxHype,
+        boss,
+      };
+      const history = addRunHistory(parseRunHistory(localStorage.getItem(RUN_HISTORY_STORAGE_KEY)), historyEntry);
+      try {
+        localStorage.setItem(RUN_HISTORY_STORAGE_KEY, JSON.stringify(history));
+      } catch {
+        // A completed run should still resolve if browser storage is unavailable.
+      }
+      setRunHistory(history);
       setArmory({ weapons: merge(storedWeapons, [game.player.weaponId]), equipment: merge(storedEquipment, game.discoveredEquipment), enemies: merge(storedEnemies, game.discoveredEnemies), unlocks: merge(storedUnlocks, earned.map((unlock) => unlock.id)), runs: lifetimeRuns, kills: lifetimeKills });
       game.resultsSaved = true;
     }
     setScreen(game.screen);
     setHud(makeHud(game));
     if (game.screen === "won" || game.screen === "lost") {
-      const saved = Number(localStorage.getItem("signal-depths-high-score") || 0);
+      const saved = storedNumber(localStorage.getItem("signal-depths-high-score"));
       const contractScore = Math.floor(game.score * game.scoreMultiplier);
       if (contractScore > saved) {
         localStorage.setItem("signal-depths-high-score", String(contractScore));
@@ -3088,7 +3574,9 @@ export default function Home() {
   }, [beep]);
 
   const startGame = useCallback(() => {
-    const nextGame = makeGame("playing", Math.floor(Math.random() * 1_000_000_000), selectedClass, selectedContract);
+    const dateKey = selectedRunMode === "daily" ? localDateKey() : null;
+    const seed = dateKey ? dailySeed(dateKey) : Math.floor(Math.random() * 1_000_000_000);
+    const nextGame = makeGame("playing", seed, selectedClass, selectedContract, 1, selectedRunMode, dateKey);
     nextGame.player.weaponId = starterWeapon;
     nextGame.player.ammo = getWeapon(starterWeapon).ammo ?? 0;
     nextGame.testerMode = testerModeRef.current;
@@ -3101,7 +3589,8 @@ export default function Home() {
     canvasRef.current?.focus();
     localStorage.setItem("signal-depths-player-class", selectedClass);
     localStorage.setItem("signal-depths-broadcast-contract", selectedContract);
-  }, [beep, selectedClass, selectedContract, starterWeapon]);
+    localStorage.setItem("signal-depths-run-mode", selectedRunMode);
+  }, [beep, selectedClass, selectedContract, selectedRunMode, starterWeapon]);
 
   const openClassSelection = useCallback(() => {
     gameRef.current.screen = "class-select";
@@ -3137,7 +3626,7 @@ export default function Home() {
     const game = gameRef.current;
     const p = game.player;
     game.upgrades.push(upgradeId);
-    if (upgradeId === "reinforced_heart") { p.maxHp += 20; p.hp = Math.min(p.maxHp, p.hp + 20); }
+    if (upgradeId === "reinforced_heart") { p.maxHp += 20; healPlayer(game, 20); }
     if (upgradeId === "second_wind") p.stamina = 100;
     if (upgradeId === "phase_steps") p.speed += 6;
     if (upgradeId === "long_fuse") p.furyVials++;
@@ -3246,8 +3735,7 @@ export default function Home() {
     });
     game.weaponHits[p.weaponId] += hits;
     if (hits && hasEquipment(game, "audience-eye") && (p.weaponId === "twin-knives" || weapon.cooldownMs <= 340)) {
-      game.hype += hits * .08;
-      game.maxHype = Math.max(game.maxHype, game.hype);
+      addHype(game, hits * .08);
     }
     const dead = game.enemies.filter((enemy) => enemy.hp <= 0);
     creditEnemyDeaths(game, dead);
@@ -3420,8 +3908,13 @@ export default function Home() {
     if (game.screen !== "playing") return;
     if (kind === "tonic") {
       if ((!game.testerMode && p.potions <= 0) || p.hp >= p.maxHp) return;
+      if (audienceModifierFor(game)?.disableHealing) {
+        setMessage(game, "AUDIENCE RULE // HEALING BLOCKED UNTIL THE VOTE EXPIRES");
+        beep(82, .08);
+        return;
+      }
       if (!game.testerMode) p.potions--;
-      p.hp = Math.min(p.maxHp, p.hp + 45);
+      healPlayer(game, 45);
       burst(game, p.x, p.y, "#34d399", 14, 75);
       setMessage(game, "[1] VITAL TONIC // +45 HEALTH");
       beep(520, 0.12);
@@ -3475,6 +3968,19 @@ export default function Home() {
     const game = gameRef.current;
     const p = game.player;
     if (game.screen !== "playing") return;
+    const cursedDrop = game.groundCursedItems.find((drop) => dist(drop, p) < 42);
+    if (cursedDrop) {
+      const item = getCursedItem(cursedDrop.cursedItemId);
+      if (!item) return;
+      const previous = carryCursedItem(game, cursedDrop.cursedItemId);
+      game.groundCursedItems = game.groundCursedItems.filter((drop) => drop.id !== cursedDrop.id);
+      if (previous && previous !== item.id) game.groundCursedItems.push({ id: game.nextId++, cursedItemId: previous, x: cursedDrop.x + 18, y: cursedDrop.y + 12, phase: cursedDrop.phase + 1 });
+      const effects = cursedEffectLines(item);
+      burst(game, cursedDrop.x, cursedDrop.y, "#ff4d9a", 30, 145);
+      setMessage(game, `CURSE ACCEPTED // ${item.name.toUpperCase()} — ${effects.upside}; ${effects.downside}`);
+      beep(118, .28);
+      return;
+    }
     const equipmentDrop = game.groundEquipment.find((drop) => dist(drop, p) < 42);
     if (equipmentDrop) {
       const item = EQUIPMENT[equipmentDrop.equipmentId];
@@ -3534,13 +4040,30 @@ export default function Home() {
       beep(640, .1);
       return;
     }
+    const secret = game.secrets.find((entry) => !entry.discovered && dist(entry, p) < 46);
+    if (secret) {
+      secret.discovered = true;
+      game.secretsFound++;
+      const secretScore = Math.round(500 * game.hype);
+      game.score += secretScore;
+      addHype(game, .2);
+      if (secret.reward === "tonic") p.potions++;
+      if (secret.reward === "bomb") p.bombs++;
+      if (secret.reward === "fury") p.furyVials++;
+      game.shake = Math.max(game.shake, .24);
+      burst(game, secret.x, secret.y, "#76c7dc", 28, 130);
+      game.combatText.push({ x: secret.x, y: secret.y - 28, text: `SECRET +${secretScore}`, life: 1.1, maxLife: 1.1, color: "#f4d35e", scale: 1 });
+      setMessage(game, `SECRET CHAMBER ${game.secretsFound}/${game.secretsTotal} // ${secretRewardLabel(secret.reward)} +${secretScore}`);
+      beep(920, .2);
+      return;
+    }
     const pylon = game.pylons.find((x) => !x.active && dist(x, p) < 42);
     if (pylon) {
       pylon.active = true;
       burst(game, pylon.x, pylon.y, "#f4d35e", 20, 115);
       const count = game.pylons.filter((x) => x.active).length;
       game.score += 280 * count;
-      game.hype = Math.min(5, game.hype + 0.35);
+      addHype(game, .35);
       if (count === game.pylons.length) {
         game.bossAwakenTime = 2.6;
         game.bossEngaged = false;
@@ -3558,7 +4081,7 @@ export default function Home() {
       const chestRoomKind = game.roomKinds[roomIndexFor(chest.x, chest.y)];
       if (chestRoomKind === "loot" && Math.random() < .5) {
         releaseLootAmbush(game, chest);
-        game.hype += 4;
+        addHype(game, 4);
         game.shake = .22;
         setMessage(game, "GAMBLER'S CACHE // AMBUSH RELEASED — THEY CAN FOLLOW");
         beep(105, .2);
@@ -3566,7 +4089,7 @@ export default function Home() {
       }
       const lootTable: ItemKind[] = ["tonic", "bomb", "fury"];
       const firstKind = lootTable[Math.floor(Math.random() * lootTable.length)];
-      const equipment = selectClassEquipmentDrop(p.classId, chestRoomKind === "elite");
+      const equipment = selectClassEquipmentDrop(p.classId, chestRoomKind === "elite" || game.cursedItemId === "idol_open_mic");
       game.groundItems.push(
         { id: game.nextId++, kind: firstKind, x: chest.x - 18, y: chest.y + 18, phase: Math.random() * 6 },
       );
@@ -3605,14 +4128,15 @@ export default function Home() {
   }, [activateItem, attack, dodge, drinkPotion, heavyAttack, interact]);
 
   useEffect(() => {
-    setHighScore(Number(localStorage.getItem("signal-depths-high-score") || 0));
+    setHighScore(storedNumber(localStorage.getItem("signal-depths-high-score")));
+    setRunHistory(parseRunHistory(localStorage.getItem(RUN_HISTORY_STORAGE_KEY)));
     const snapshot: ArmorySnapshot = {
-      weapons: JSON.parse(localStorage.getItem("signal-depths-discovered-weapons") || "[\"cleaver\"]"),
-      equipment: JSON.parse(localStorage.getItem("signal-depths-discovered-equipment") || "[]"),
-      enemies: JSON.parse(localStorage.getItem("signal-depths-discovered-enemies") || "[]"),
-      unlocks: JSON.parse(localStorage.getItem("signal-depths-unlocks") || "[]"),
-      runs: Number(localStorage.getItem("signal-depths-lifetime-runs") || 0),
-      kills: Number(localStorage.getItem("signal-depths-lifetime-kills") || 0),
+      weapons: parseStoredArray(localStorage.getItem("signal-depths-discovered-weapons"), ["cleaver" as WeaponId], (value): value is WeaponId => typeof value === "string" && value in WEAPONS),
+      equipment: parseStoredArray(localStorage.getItem("signal-depths-discovered-equipment"), [], (value): value is EquipmentId => typeof value === "string" && EQUIPMENT_IDS.includes(value as EquipmentId)),
+      enemies: parseStoredArray(localStorage.getItem("signal-depths-discovered-enemies"), [], (value): value is EnemyKind => typeof value === "string" && value in enemyStats),
+      unlocks: parseStoredArray(localStorage.getItem("signal-depths-unlocks"), [], (value): value is string => typeof value === "string" && PERMANENT_UNLOCKS.some((unlock) => unlock.id === value)),
+      runs: storedNumber(localStorage.getItem("signal-depths-lifetime-runs")),
+      kills: storedNumber(localStorage.getItem("signal-depths-lifetime-kills")),
     };
     setArmory(snapshot);
     const savedStarter = localStorage.getItem("signal-depths-starter-weapon") as WeaponId | null;
@@ -3622,6 +4146,8 @@ export default function Home() {
     if (savedClass && PLAYER_CLASS_IDS.includes(savedClass)) setSelectedClass(savedClass);
     const savedContract = localStorage.getItem("signal-depths-broadcast-contract") as BroadcastContractId | null;
     if (savedContract && savedContract in BROADCAST_CONTRACTS) setSelectedContract(savedContract);
+    const savedRunMode = localStorage.getItem("signal-depths-run-mode");
+    if (savedRunMode === "daily" || savedRunMode === "standard") setSelectedRunMode(savedRunMode);
     const savedControlMode = localStorage.getItem("signal-depths-control-mode") as ControlMode | null;
     if (savedControlMode === "keyboard" || savedControlMode === "mouse") {
       controlModeRef.current = savedControlMode;
@@ -3692,7 +4218,7 @@ export default function Home() {
         if (key === "k") dodge();
         if (key === "f") {
           const game = gameRef.current;
-          const gearNearby = game.groundEquipment.some((drop) => dist(drop, game.player) < 42);
+          const gearNearby = game.groundEquipment.some((drop) => dist(drop, game.player) < 42) || game.groundCursedItems.some((drop) => dist(drop, game.player) < 42);
           if (gearNearby) interactHoldTimer.current = setTimeout(interact, 520);
           else interact();
         }
@@ -3755,6 +4281,7 @@ export default function Home() {
   const currentGame = gameRef.current;
   const runSummary = summarizeRun(runStatsFor(currentGame));
   const activeDare = AUDIENCE_DARES.find((dare) => dare.id === currentGame.activeDareId) ?? AUDIENCE_DARES[0];
+  const activeAudienceModifier = audienceModifierFor(currentGame);
   const damageBreakdown = Object.entries(currentGame.damageBySource).sort((a, b) => b[1] - a[1]).slice(0, 3);
   const mostUsedWeapon = (Object.entries(currentGame.weaponAttacks) as Array<[WeaponId, number]>).sort((a, b) => b[1] - a[1])[0];
   const hitsPerAttack = mostUsedWeapon && mostUsedWeapon[1] > 0 ? (currentGame.weaponHits[mostUsedWeapon[0]] / mostUsedWeapon[1]).toFixed(1) : "0.0";
@@ -3795,6 +4322,7 @@ export default function Home() {
             <span>{hud.classId === "knight" ? "ACTIVE WEAPON" : "CLASS FOCUS"}</span>
             <strong>{hud.weaponName}</strong>
             <small>{hud.classId === "archer" ? `${hud.ammo} ARROWS // ${CLASS_ARSENAL[currentGame.player.classArsenalId].mechanic.toUpperCase()}${currentGame.player.reloadTime > 0 ? " // RELOADING" : ""}` : hud.classId === "mage" ? CLASS_ARSENAL[currentGame.player.classArsenalId].mechanic.toUpperCase() : hud.ammo > 0 ? `${hud.ammo} ROUNDS` : "UNLIMITED"}</small>
+            <small>BUILD // {buildSynergyFor(currentGame).name.toUpperCase()}</small>
           </div>
           <div className="gear-rack">
             <span>LOADOUT</span>
@@ -3803,6 +4331,12 @@ export default function Home() {
               return <p key={slot}><b>{slot}</b><em>{id ? EQUIPMENT[id].name : "EMPTY"}</em></p>;
             })}
           </div>
+          {hud.cursedItemId && (() => {
+            const item = getCursedItem(hud.cursedItemId);
+            if (!item) return null;
+            const effects = cursedEffectLines(item);
+            return <div className="carried-curse"><span>CURSED RELIC // {hud.cursedRoomsCleared} ROOMS CARRIED</span><strong>{item.name}</strong><small className="curse-upside">{effects.upside} · +{item.hypePerRoom} Hype/room</small><small className="curse-downside">{effects.downside}</small></div>;
+          })()}
         </aside>
 
         <div className="stage-wrap">
@@ -3844,6 +4378,14 @@ export default function Home() {
                   })}
                 </div>
                 <div className="class-detail"><b>{PLAYER_CLASSES[selectedClass].basicName}</b><span>{PLAYER_CLASSES[selectedClass].basicDescription}</span><b>{PLAYER_CLASSES[selectedClass].heavyName}</b><span>{PLAYER_CLASSES[selectedClass].heavyDescription}</span></div>
+                <div className="run-mode-select" role="radiogroup" aria-label="Choose run mode">
+                  <button role="radio" aria-checked={selectedRunMode === "standard"} className={selectedRunMode === "standard" ? "selected" : ""} onClick={() => setSelectedRunMode("standard")}>
+                    <span>STANDARD DESCENT</span><small>Fresh random signal every run.</small>
+                  </button>
+                  <button role="radio" aria-checked={selectedRunMode === "daily"} className={selectedRunMode === "daily" ? "selected" : ""} onClick={() => setSelectedRunMode("daily")}>
+                    <span>DAILY BROADCAST // {localDateKey()}</span><small>One deterministic two-floor signal for everyone today.</small>
+                  </button>
+                </div>
                 <div className="contract-heading"><span>BROADCAST CONTRACT</span><small>Choose the risk the audience is paying to see.</small></div>
                 <div className="contract-select-grid" role="radiogroup" aria-label="Choose broadcast contract">
                   {(Object.values(BROADCAST_CONTRACTS) as BroadcastContract[]).map((contract) => <button key={contract.id} role="radio" aria-checked={selectedContract === contract.id} className={`contract-choice ${selectedContract === contract.id ? "selected" : ""}`} onClick={() => setSelectedContract(contract.id)}>
@@ -3853,11 +4395,18 @@ export default function Home() {
                 <div className="class-actions"><button className="secondary" onClick={() => { gameRef.current.screen = "title"; setScreen("title"); }}>BACK</button><button onClick={startGame}>DESCEND AS {PLAYER_CLASSES[selectedClass].name.toUpperCase()}</button></div>
               </div>
             )}
-            {screen === "playing" && hud.nearbyEquipmentId && (() => {
+            {screen === "playing" && hud.nearbyEquipmentId && !hud.nearbyCursedItemId && (() => {
               const item = EQUIPMENT[hud.nearbyEquipmentId];
               const equippedId = currentGame.equipped[item.slot];
               const equipped = equippedId ? EQUIPMENT[equippedId] : null;
               return <div className={`loot-compare ${item.rarity}`}><span>{item.rarity} {item.slot}</span><strong>{item.name}</strong><p>{item.perk}{" // "}{item.detail}</p><i>{equipped ? `REPLACES: ${equipped.name} — ${equipped.detail}` : `${item.slot.toUpperCase()} SLOT EMPTY`}</i><small>HOLD <kbd>F</kbd> TO SWAP</small></div>;
+            })()}
+            {screen === "playing" && hud.nearbyCursedItemId && (() => {
+              const item = getCursedItem(hud.nearbyCursedItemId);
+              if (!item) return null;
+              const effects = cursedEffectLines(item);
+              const carried = getCursedItem(hud.cursedItemId);
+              return <div className="loot-compare cursed"><span>CURSED // ONE RELIC LIMIT</span><strong>{item.name}</strong><p>{item.description}</p><i className="curse-upside">UPSIDE // {effects.upside} · +{item.hypePerRoom} Hype per cleared room</i><i className="curse-downside">CURSE // {effects.downside}</i><small>HOLD <kbd>F</kbd> TO {carried ? `REPLACE ${carried.name.toUpperCase()}` : "CARRY"}</small></div>;
             })()}
             {screen === "upgrade" && (
               <div className="game-overlay upgrade-overlay">
@@ -3883,13 +4432,14 @@ export default function Home() {
             )}
             {(screen === "won" || screen === "lost") && (
               <div className={`game-overlay result-overlay ${screen}`}>
-                <p>{screen === "won" ? "FLOOR TRANSMISSION COMPLETE" : "SIGNAL LOST"}</p>
+                <p>{currentGame.runMode === "daily" ? `DAILY BROADCAST // ${currentGame.dailyKey}` : "STANDARD BROADCAST"} · {screen === "won" ? "FLOOR TRANSMISSION COMPLETE" : "SIGNAL LOST"}</p>
                 <div className="result-grade"><b>{runSummary.grade}</b><span>{runSummary.gradeLabel}</span></div>
                 <div className="result-score"><span>FINAL SCORE</span><b>{hud.score.toLocaleString()}</b></div>
                 <div className="result-stats">
                   <span><b>{runSummary.explorationPercent}%</b> EXPLORED</span>
                   <span><b>{currentGame.kills}</b> KILLS</span>
-                  <span><b>{currentGame.roomsCleared}</b> CLEARED</span>
+                  <span><b>{currentGame.priorRoomsCleared + currentGame.roomsCleared}</b> CLEARED</span>
+                  <span><b>{currentGame.secretsFound}</b> SECRETS</span>
                   <span><b>×{currentGame.maxHype.toFixed(1)}</b> MAX HYPE</span>
                 </div>
                 <div className="result-breakdown">
@@ -3910,8 +4460,9 @@ export default function Home() {
           <div className="progress-list">
             <p><span>ROOMS TRACED</span><b>{hud.rooms}/{ROOM_COLS * ROOM_ROWS}</b></p>
             <p><span>ROOMS CLEARED</span><b>{hud.roomsCleared}/{ROOM_COLS * ROOM_ROWS}</b></p>
+            <p><span>SECRETS FOUND</span><b>{hud.secretsFound}/{hud.secretsTotal}</b></p>
             <p><span>PYLONS LIVE</span><b>{hud.pylons}/3</b></p>
-            <p><span>{currentGame.floorNumber === 2 ? "NINJA MASTER" : "WARDEN"}</span><b>{currentGame.bossDead ? "DOWN" : hud.pylons === 3 ? "LIVE" : "DORMANT"}</b></p>
+            <p><span>{bossDisplayName(currentGame.enemies.find((enemy) => enemy.kind === "boss"))}</span><b>{currentGame.bossDead ? "DOWN" : hud.pylons === 3 ? "LIVE" : "DORMANT"}</b></p>
           </div>
           <div className={`dare-card ${currentGame.dareComplete ? "complete" : ""}`}>
             <span>AUDIENCE DARE</span>
@@ -3920,6 +4471,7 @@ export default function Home() {
             <i><em style={{ width: `${Math.min(100, (hud.dareProgress / Math.max(1, hud.dareTarget)) * 100)}%` }} /></i>
             <small>{currentGame.dareComplete ? "COMPLETE" : `${hud.dareProgress}/${hud.dareTarget}`}</small>
           </div>
+          {activeAudienceModifier && <div className="active-contract"><span>AUDIENCE RULE // {currentGame.audienceModifierRooms} ROOM{currentGame.audienceModifierRooms === 1 ? "" : "S"}</span><strong>{activeAudienceModifier.name}</strong><small>{activeAudienceModifier.description}</small></div>}
           <div className="active-contract"><span>ACTIVE CONTRACT</span><strong>{BROADCAST_CONTRACTS[currentGame.contractId].name}</strong><small>{BROADCAST_CONTRACTS[currentGame.contractId].risk}{" // "}{Math.round((currentGame.scoreMultiplier - 1) * 100)}% SCORE BONUS</small></div>
         </aside>
       </section>
@@ -3954,13 +4506,13 @@ export default function Home() {
           onClose={closeHelp}
         />
       )}
-      {armoryOpen && <ArmoryModal snapshot={armory} starterWeapon={starterWeapon} onStarterChange={(weapon) => { setStarterWeapon(weapon); localStorage.setItem("signal-depths-starter-weapon", weapon); }} onClose={() => setArmoryOpen(false)} />}
+      {armoryOpen && <ArmoryModal snapshot={armory} history={runHistory} starterWeapon={starterWeapon} onStarterChange={(weapon) => { setStarterWeapon(weapon); localStorage.setItem("signal-depths-starter-weapon", weapon); }} onClose={() => setArmoryOpen(false)} />}
       <footer><span>AN ORIGINAL ARCADE DESCENT</span><span>ESC // PAUSE</span><span>LOCAL SAVE ENABLED</span></footer>
     </main>
   );
 }
 
-function ArmoryModal({ snapshot, starterWeapon, onStarterChange, onClose }: { snapshot: ArmorySnapshot; starterWeapon: WeaponId; onStarterChange: (weapon: WeaponId) => void; onClose: () => void }) {
+function ArmoryModal({ snapshot, history, starterWeapon, onStarterChange, onClose }: { snapshot: ArmorySnapshot; history: readonly RunHistoryEntry[]; starterWeapon: WeaponId; onStarterChange: (weapon: WeaponId) => void; onClose: () => void }) {
   const starterUnlock: Partial<Record<WeaponId, string>> = { spear: "weapon_spear", hammer: "weapon_hammer" };
   return (
     <div className="help-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -3968,6 +4520,13 @@ function ArmoryModal({ snapshot, starterWeapon, onStarterChange, onClose }: { sn
         <header className="help-header"><div><span>PERSISTENT COLLECTION // LOCAL SAVE</span><h2 id="armory-title">THE ARMORY</h2></div><button className="help-close" onClick={onClose} aria-label="Close Armory">×</button></header>
         <div className="armory-summary"><p><b>{snapshot.runs}</b> RUNS</p><p><b>{snapshot.kills}</b> KILLS</p><p><b>{snapshot.weapons.length}/{Object.keys(WEAPONS).length}</b> WEAPONS</p><p><b>{snapshot.equipment.length}/{EQUIPMENT_IDS.length}</b> GEAR</p></div>
         <div className="armory-scroll">
+          <section className="run-history"><span className="guide-kicker">RECENT TRANSMISSIONS</span><h3>Run history saved on this device.</h3>
+            {history.length > 0 ? <div className="run-history-list">{history.map((entry) => <article key={entry.id}>
+              <b className={`history-grade grade-${entry.grade.toLowerCase()}`}>{entry.grade}</b>
+              <div><span>{entry.mode === "daily" ? `DAILY // ${entry.dailyKey}` : "STANDARD"} · {new Date(entry.endedAt).toLocaleDateString()}</span><strong>{PLAYER_CLASSES[entry.classId].name} · {entry.boss}</strong><small>{entry.won ? "ESCAPED" : "SIGNAL LOST"} · {entry.roomsCleared} ROOMS · {entry.kills} KILLS · ×{entry.maxHype.toFixed(1)} HYPE</small></div>
+              <em>{entry.score.toLocaleString()}</em>
+            </article>)}</div> : <p className="empty-history">No completed transmissions recorded yet.</p>}
+          </section>
           <section><span className="guide-kicker">STARTING WEAPON</span><h3>Choose what enters the next run.</h3><div className="armory-grid weapon-collection">
             {Object.values(WEAPONS).map((weapon) => {
               const discovered = snapshot.weapons.includes(weapon.id);
@@ -4039,6 +4598,10 @@ function HelpGuide({ section, controlMode, comfortSettings, testerMode, onSectio
                   <li><b>Beat the Warden.</b> The skull-marked boss gate shows your live pylon count and opens once all three pylons are active. The arena seals until the Warden falls.</li>
                 </ol>
                 <div className="guide-callout"><strong>HYPE = SCORE POWER</strong><span>Clear rooms and complete audience dares to raise your multiplier and trigger sponsor drops.</span></div>
+                <div className="guide-callout audience-guide-callout"><strong>AUDIENCE VOTES // ROOMS 3, 6, AND 9</strong><span>At each milestone, the audience deterministically chooses one of two temporary rules. The HUD shows its remaining clears. Every clear—including maze routes—earns its payout and consumes one room. “No Healing” blocks tonics, kill healing, rest nodes, upgrades, equipment, curses, and sponsor healing until it expires.</span></div>
+                <div className="audience-rule-grid">
+                  {AUDIENCE_MODIFIERS.map((modifier) => <article key={modifier.id}><b>{modifier.name}</b><span>{modifier.durationRooms} ROOM{modifier.durationRooms === 1 ? "" : "S"}{" // "}{modifier.ballot}</span><small>{modifier.description}</small></article>)}
+                </div>
               </div>
             </div>
           )}
@@ -4131,6 +4694,10 @@ function HelpGuide({ section, controlMode, comfortSettings, testerMode, onSectio
               </div>
               <p className="guide-intro equipment-guide-intro">Equipment occupies one of four slots: armor, boots, charm, or weapon mod. Matching perks creates builds that can change how you move, score, heal, and attack.</p>
               <div className="arsenal-grid">{EQUIPMENT_IDS.map((id) => { const item = EQUIPMENT[id]; return <article className="guide-card weapon-guide-card" key={id}><EquipmentArt item={id} /><div><span>{item.rarity}{" // "}{item.slot}</span><h3>{item.name}</h3><p><b>{item.perk}</b> — {item.detail}</p></div></article>; })}</div>
+              <p className="guide-intro equipment-guide-intro">Build synergies activate automatically when your current arsenal matches an upgrade or equipment perk. The active build name appears beneath your weapon in the run HUD; changing either ingredient updates it immediately.</p>
+              <div className="synergy-guide-grid">{BUILD_SYNERGY_GUIDE.filter((synergy) => synergy.classId === arsenalClass).map((synergy) => <article className="guide-card synergy-guide-card" key={synergy.id}><div><span>{PLAYER_CLASSES[synergy.classId].name} BUILD</span><h3>{synergy.name}</h3><p>{synergy.recipe}</p><strong>{synergy.payoff}</strong></div></article>)}</div>
+              <p className="guide-intro equipment-guide-intro">Cursed relics occupy a separate one-item carry slot. Each grants a powerful upside and bonus Hype on every room clear, but its drawback remains active until you replace it.</p>
+              <div className="curse-guide-grid">{CURSED_ITEMS.map((item) => { const effects = cursedEffectLines(item); return <article className="guide-card curse-guide-card" key={item.id}><div className="curse-guide-art" aria-hidden="true"><i /></div><div><span>CURSED // +{item.hypePerRoom} HYPE PER ROOM</span><h3>{item.name}</h3><p>{item.description}</p><strong>{effects.upside}</strong><em>{effects.downside}</em></div></article>; })}</div>
             </div>
           )}
           {section === "enemies" && (
@@ -4204,6 +4771,9 @@ function MiniMap({ game }: { game: Game }) {
       {Array.from({ length: totalRooms }, (_, room) => (
         (() => {
           const seen = game.explored.has(String(room));
+          const roomId = roomIdAtSlot(game.navigation, room);
+          const visibleRoutes = (roomId ? game.navigation.connectionsByRoom[roomId] ?? [] : [])
+            .filter((connection) => game.explored.has(String(connection.toSlot.index)));
           const bossState = room === bossRoom && seen ? game.bossDead ? "boss-down" : bossGateOpen(game) ? "boss-live" : "boss-locked" : "";
           const exitState = room === exitRoom && seen ? game.bossDead ? "exit-open" : "exit-locked" : "";
           const classes = [seen ? "seen" : "unknown", seen && game.roomCleared[room] ? "cleared" : "", room === currentRoom ? "current" : "", bossState, exitState].filter(Boolean).join(" ");
@@ -4215,6 +4785,7 @@ function MiniMap({ game }: { game: Game }) {
             poweredPylons.has(room) ? "pylon powered" : "",
           ].filter(Boolean).join(", ");
           return <div key={room} className={classes} aria-label={`Room ${room + 1}: ${stateLabel}`}>
+            {visibleRoutes.map((connection) => <i key={connection.doorId} className={`map-route ${connection.direction} ${connection.physicallyAdjacent ? "" : "linked"}`} />)}
             {seen ? <span className="room-id">{String(room + 1).padStart(2, "0")}</span> : null}
             {room === currentRoom ? <i className="current-dot" /> : null}
             {seen && poweredPylons.has(room) ? <i className="pylon-dot" /> : null}

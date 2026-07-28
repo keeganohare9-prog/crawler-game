@@ -87,19 +87,20 @@ Important architectural implications:
 
 ## Floor and room system
 
-The live implementation uses a fixed row-major 4-by-3 physical floor:
+The live implementation embeds a seeded logical graph into a 4-by-3 physical floor:
 
 - 12 rooms total.
 - Room 1 is the safe entry room.
-- Room 12 is always the boss room because `generateFloor()` always places `boss` last.
-- Signal pylons are fixed in room indices `2`, `5`, and `8` (display rooms 3, 6, and 9).
+- `buildFloorNavigation()` places the entry, boss, side branches, and connections into physical slots.
+- Three reachable non-entry, non-boss rooms receive signal pylons.
 - The remaining room kinds are seeded/shuffled and include ambush, loot, treasure, survival, elite, puzzle, and broadcast rooms.
 - The second room is normalized to a basic ambush if generation makes it an elite, survival, or broadcast room.
 
 Room visibility and navigation rules:
 
 - Only the current room is rendered as playable space.
-- Adjacent door labels hint at destination risk/reward without exposing the full room.
+- Each floor deterministically hides three signal chambers in reachable non-safe, non-boss walls. A pulsing cracked wall reveals a `SIGNAL LEAK` at close range; interacting awards a seeded consumable, Hype, and a Hype-scaled score bonus. The HUD and run summary track discoveries across floors.
+- Door labels hint at destination risk/reward without exposing the full room. `LINK` passages connect graph branches that cannot be represented by an adjacent physical slot.
 - Boss routes use a skull and `BOSS` label; other threats use `DANGER`.
 - Physical wall collision uses `isWallTile()`. Door openings span local tile positions `[2, 3, 4, 5, 6]` so the player does not need perfect alignment.
 - Ordinary rooms never lock. Enemies from started rooms can pursue the player through doorways using `chaseWaypoint()`.
@@ -109,9 +110,7 @@ Room visibility and navigation rules:
 
 Room completion is computed near the end of `updateGame()`. Loot rooms use a Gambler's Cache: opening the chest has a 50% chance to release a pursuing enemy group and a 50% chance to drop loot.
 
-### Important floor-model caveat
-
-`app/game/floor.ts` defines a richer logical graph with route choices and side branches. The current game does **not** navigate that graph. `makeGame()` takes `floor.rooms.map(room => room.kind)` and maps those kinds directly onto the fixed 4-by-3 canvas grid. If changing topology, doors, or procedural routing, reconcile these two models rather than assuming the graph already drives movement.
+`app/game/floor.ts` owns logical generation; `app/game/floor-navigation.ts` validates reachability and adapts that graph to canvas slots, collision, route hints, pursuit, and the minimap. Keep those two models synchronized when adding room topology.
 
 ## Player classes
 
@@ -182,7 +181,7 @@ Enemy kinds in the live game:
 
 Enemy stats are defined in `enemyStats` inside `app/page.tsx`; more reusable behavior specifications live in `app/game/combat-content.ts`. These are not a single unified source of truth yet.
 
-The boss is invulnerable/dormant before three pylons. `bossPhaseForHealth()` selects Opening Monologue, Ratings Spike, or Dead Air based on remaining-health ratio. The live game uses the phase names and radial-volley intensity, but not every detailed arena/pylon rule described in `BOSS_PHASES` is implemented.
+The boss is invulnerable/dormant before three pylons. Floor-one seeds deterministically select either the Broadcast Warden or Static Conductor. Both use `bossPhaseForHealth()` to select Opening Monologue, Ratings Spike, or Dead Air based on remaining-health ratio. The Warden closes the arena with radial volleys; the Conductor telegraphs a signal cage with two opposite green safe lanes before firing, and its warning window shortens by phase. Floor two remains the Ninja Master encounter.
 
 ## Loot, equipment, upgrades, and progression
 
@@ -196,7 +195,12 @@ Equipment has four slots: armor, boots, charm, and mod. Equipping a new item swa
 
 Safe entry interaction fully heals the player, grants a tonic, and opens a choice of three seeded run upgrades. The game also tracks an audience dare and sponsor rewards tied to Hype thresholds.
 
-Not every declarative progression entry is fully wired. Before changing balance, check whether the specific `RUN_UPGRADES`, `AUDIENCE_DARES`, `PERMANENT_UNLOCKS`, or `CURSED_ITEMS` entry is actually referenced in `app/page.tsx`.
+- Six class/loadout build synergies activate from matching arsenals, upgrades, and equipment, adding damage, movement, or kill-Hype bonuses.
+- Audience votes trigger after rooms 3, 6, and 9. A seeded ballot selects one of six temporary risk/reward rules for the next one or two clears.
+- One deterministic cursed relic can drop per floor. All five `CURSED_ITEMS` have live upsides, drawbacks, per-room Hype, HUD/guide presentation, and `cursed_carrier` dare support.
+- Standard and date-seeded Daily runs share the same two-floor campaign. The Armory stores a defensive, capped history of the 12 most recent transmissions.
+
+Before changing balance, check whether the specific `RUN_UPGRADES`, `AUDIENCE_DARES`, `PERMANENT_UNLOCKS`, or other declarative entry is referenced in `app/page.tsx`.
 
 ## Controls
 
@@ -241,6 +245,8 @@ The game writes these `localStorage` keys:
 - `signal-depths-discovered-enemies`
 - `signal-depths-starter-weapon`
 - `signal-depths-player-class`
+- `signal-depths-run-mode`
+- `signal-depths-run-history`
 
 There is no schema version or migration layer. Preserve existing value shapes when changing persistence, or add defensive parsing/migration logic.
 

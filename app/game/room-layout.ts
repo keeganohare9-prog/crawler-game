@@ -35,10 +35,10 @@ export function hazardTilesForRoom(roomIndex: number, roomCols: number, roomCoun
   return [3, 4, 5].map((localX) => ({ x: roomCol * 8 + localX, y }));
 }
 
-export function hazardStateAt(elapsed: number, roomIndex: number): HazardState {
+export function hazardStateAt(elapsed: number, roomIndex: number, warningReductionSeconds = 0): HazardState {
   const cycle = (elapsed + roomIndex * .47) % 3.6;
   if (cycle < 1.65) return "dormant";
-  if (cycle < 2.75) return "warning";
+  if (cycle < 2.75 - Math.max(0, warningReductionSeconds)) return "warning";
   return "active";
 }
 
