@@ -904,6 +904,29 @@ function enemyIsTargetable(enemy: Enemy) {
   return enemy.burrowPhase !== "underground" && enemy.burrowPhase !== "erupting";
 }
 
+function meleeAttackHits(
+  player: Game["player"],
+  enemy: Enemy,
+  weapon: ReturnType<typeof getWeapon>,
+  heavy = false,
+) {
+  const targetRadius = enemy.kind === "boss" ? 24 : enemy.kind === "warden" || enemy.kind === "mimic" ? 16 : 12;
+  if (weapon.id === "hammer") {
+    const impactDistance = heavy ? 54 : 48;
+    const impactRadius = heavy ? 39 : 32;
+    const impactX = player.x + player.dirX * impactDistance;
+    const impactY = player.y + player.dirY * impactDistance;
+    return Math.hypot(enemy.x - impactX, enemy.y - impactY) <= impactRadius + targetRadius;
+  }
+  const dx = enemy.x - player.x;
+  const dy = enemy.y - player.y;
+  const distance = Math.hypot(dx, dy);
+  const facing = (dx * player.dirX + dy * player.dirY) / Math.max(1, distance);
+  const range = weapon.range * (heavy ? 1.15 : 1) + targetRadius;
+  const arc = heavy ? Math.min(Math.PI, weapon.arcRadians * 1.35) : weapon.arcRadians;
+  return distance <= range && facing >= Math.cos(arc / 2);
+}
+
 function shieldingBulwark(game: Game, target: Enemy) {
   if (target.kind === "bulwark") return null;
   return game.enemies.find((enemy) =>
@@ -1900,7 +1923,10 @@ function drawPlayerSprite(ctx: CanvasRenderingContext2D, game: Game, shakeScale 
   }
 
   // Every weapon has its own silhouette and attack motion.
-  const swingProgress = p.attackFx > 0 ? 1 - p.attackFx / .2 : 1;
+  const attackFxDuration = p.weaponId === "hammer" ? .3 : p.weaponId === "spear" ? .24 : .2;
+  const swingProgress = p.attackFx > 0
+    ? Math.max(0, Math.min(1, 1 - p.attackFx / attackFxDuration))
+    : 1;
   const swingAngle = p.attackFx > 0 ? facingAngle - weapon.arcRadians * .65 + swingProgress * weapon.arcRadians * 1.3 : facingAngle + .18;
   ctx.rotate(swingAngle);
   drawWeaponModel(ctx, p.weaponId, game.elapsed);
@@ -3703,12 +3729,7 @@ export default function Home() {
     }
     let hits = 0;
     game.enemies.forEach((enemy) => {
-      const dx = enemy.x - p.x;
-      const dy = enemy.y - p.y;
-      const distance = Math.hypot(dx, dy);
-      const facing = (dx * p.dirX + dy * p.dirY) / Math.max(1, distance);
-      const facingThreshold = Math.cos(weapon.arcRadians / 2);
-      if (enemyIsTargetable(enemy) && distance < weapon.range && facing > facingThreshold) {
+      if (enemyIsTargetable(enemy) && meleeAttackHits(p, enemy, weapon)) {
         if (enemy.kind === "boss" && !game.bossEngaged) {
           setMessage(game, game.bossIntroTime > 0 ? "WARDEN AWAKENING // HOLD FOR THE BROADCAST" : "WARDEN SHIELDED // FEED THE THREE SIGNALS");
           return;
@@ -3717,6 +3738,7 @@ export default function Home() {
         const kinetic = p.weaponId === "hammer" && hasEquipment(game, "kinetic-brace") ? 1.3 : 1;
         const damage = weapon.damage * weapon.attacksPerInput * hammerArmor * kinetic * (p.furyTime > 0 ? 1.75 : 1) * (game.upgrades.filter((id) => id === "razor_arc").length ? 1.1 : 1);
         const appliedDamage = damageEnemy(game, enemy, damage);
+        if (appliedDamage <= 0) return;
         showDamage(game, enemy, appliedDamage, p.weaponId === "hammer", enemy.kind === "boss" ? "#ff8fab" : "#fff3b0");
         enemy.flash = 0.14;
         displaceEntity(enemy, p.dirX * weapon.knockback, p.dirY * weapon.knockback, enemy.kind === "boss" ? 17 : 11);
@@ -3819,14 +3841,11 @@ export default function Home() {
     } else {
       let hits = 0;
       game.enemies.forEach((enemy) => {
-        const dx = enemy.x - p.x;
-        const dy = enemy.y - p.y;
-        const distance = Math.hypot(dx, dy);
-        const facing = (dx * p.dirX + dy * p.dirY) / Math.max(1, distance);
-        if (enemyIsTargetable(enemy) && distance < weapon.range * 1.15 && facing > Math.cos(Math.min(Math.PI, weapon.arcRadians * 1.35) / 2)) {
+        if (enemyIsTargetable(enemy) && meleeAttackHits(p, enemy, weapon, true)) {
           if (enemy.kind === "boss" && !game.bossEngaged) return;
           const damage = weapon.damage * weapon.attacksPerInput * 1.65 * (p.furyTime > 0 ? 1.75 : 1);
           const appliedDamage = damageEnemy(game, enemy, damage);
+          if (appliedDamage <= 0) return;
           showDamage(game, enemy, appliedDamage, true, "#fff3b0");
           enemy.flash = .22;
           const knockback = enemy.kind === "boss" ? weapon.knockback * .35 : weapon.knockback * 1.6;

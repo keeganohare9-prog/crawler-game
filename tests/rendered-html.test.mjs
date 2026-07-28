@@ -288,3 +288,20 @@ test("bounds per-frame rendering and indexes enemy AI queries", async () => {
   assert.match(page, /ninjasByHomeRoom/);
   assert.match(page, /isInActiveRoom/);
 });
+
+test("keeps weapon animation radii valid for longer hammer and spear effects", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /const attackFxDuration = p\.weaponId === "hammer" \? \.3 : p\.weaponId === "spear" \? \.24 : \.2/);
+  assert.match(page, /Math\.max\(0, Math\.min\(1, 1 - p\.attackFx \/ attackFxDuration\)\)/);
+  assert.match(page, /ctx\.arc\(48, 0, 30 \* swingProgress/);
+});
+
+test("matches the Dead-Air Hammer damage area to its rendered impact ring", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /function meleeAttackHits/);
+  assert.match(page, /if \(weapon\.id === "hammer"\)/);
+  assert.match(page, /const impactDistance = heavy \? 54 : 48/);
+  assert.match(page, /const impactRadius = heavy \? 39 : 32/);
+  assert.match(page, /impactRadius \+ targetRadius/);
+  assert.match(page, /if \(appliedDamage <= 0\) return/);
+});
