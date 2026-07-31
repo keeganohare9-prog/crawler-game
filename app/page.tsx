@@ -3659,7 +3659,7 @@ export default function Home() {
   const [comfortSettings, setComfortSettings] = useState<ComfortSettings>(DEFAULT_COMFORT_SETTINGS);
   const comfortSettingsRef = useRef<ComfortSettings>(DEFAULT_COMFORT_SETTINGS);
   const [testerMode, setTesterMode] = useState(false);
-  const [mobileMapOpen, setMobileMapOpen] = useState(false);
+  const [mobileSelectionStep, setMobileSelectionStep] = useState<0 | 1 | 2>(0);
   const testerModeRef = useRef(false);
   const helpPreviousScreen = useRef<Screen | null>(null);
 
@@ -3838,7 +3838,6 @@ export default function Home() {
     gameRef.current = nextGame;
     keysRef.current.clear();
     touchInputRef.current = { moveX: 0, moveY: 0, aimX: 0, aimY: 0, aimActive: false, firing: false };
-    setMobileMapOpen(false);
     setScreen("playing");
     setHud(makeHud(nextGame));
     beep(164, 0.1);
@@ -3850,6 +3849,7 @@ export default function Home() {
 
   const openClassSelection = useCallback(() => {
     gameRef.current.screen = "class-select";
+    setMobileSelectionStep(0);
     setScreen("class-select");
     beep(360, .08);
   }, [beep]);
@@ -4725,17 +4725,7 @@ export default function Home() {
             />
             {screen === "playing" && (
               <div className="mobile-game-ui" aria-label="Mobile game interface">
-                <div className="mobile-hud-vitals" aria-label={`Vital ${hud.hp} of ${hud.maxHp}, Drive ${hud.stamina} of 100`}>
-                  <div><span>VITAL</span><i><em style={{ width: `${Math.max(0, Math.min(100, hud.hp / hud.maxHp * 100))}%` }} /></i></div>
-                  <div><span>DRIVE</span><i><em style={{ width: `${Math.max(0, Math.min(100, hud.stamina))}%` }} /></i></div>
-                </div>
-                <div className="mobile-hud-clock"><b>{String(hud.time).padStart(3, "0")}</b><span>HYPE ×{hud.hype.toFixed(1)}</span></div>
-                <div className="mobile-objective"><span>DIRECTIVE</span><b>{hud.objective}</b></div>
                 <button className="mobile-pause" onClick={togglePause} aria-label="Pause game">Ⅱ</button>
-                <button className={`mobile-map ${mobileMapOpen ? "open" : ""}`} onClick={() => setMobileMapOpen((open) => !open)} aria-label={mobileMapOpen ? "Collapse floor map" : "Expand floor map"} aria-expanded={mobileMapOpen}>
-                  <MiniMap game={currentGame} />
-                  <span>FLOOR {String(currentGame.floorNumber).padStart(2, "0")}</span>
-                </button>
                 <div className="mobile-items" aria-label="Items">
                   <button onClick={() => pressAction("potion")}><span>TONIC</span><b>{testerMode ? "∞" : hud.potions}</b></button>
                   <button onClick={() => pressAction("bomb")}><span>BOMB</span><b>{testerMode ? "∞" : hud.bombs}</b></button>
@@ -4745,7 +4735,7 @@ export default function Home() {
                 <MobileStick label="AIM / FIRE" accent="aim" onChange={handleTouchAim} />
                 <div className="mobile-actions" aria-label="Actions">
                   <button className="mobile-action-heavy" onClick={() => pressAction("heavy")}>HEAVY</button>
-                  <button className="mobile-action-use" onClick={() => pressAction("interact")}>USE</button>
+                  <button className="mobile-action-use" onPointerDown={(event) => { event.preventDefault(); pressAction("interact"); }} aria-label="Interact, same as F on desktop">F / USE</button>
                   <button className="mobile-action-dodge" onClick={() => pressAction("dodge")}>DODGE</button>
                 </div>
               </div>
@@ -4762,9 +4752,9 @@ export default function Home() {
               </div>
             )}
             {screen === "class-select" && (
-              <div className="game-overlay class-select-overlay">
+              <div className={`game-overlay class-select-overlay mobile-selection-step-${mobileSelectionStep}`}>
                 <p>CHOOSE YOUR SIGNAL</p>
-                <h2>WHO ENTERS THE DEPTHS?</h2>
+                <h2>{mobileSelectionStep === 0 ? "WHO ENTERS THE DEPTHS?" : mobileSelectionStep === 1 ? "SET THE BROADCAST" : "FINALIZE THE RUN"}</h2>
                 <div className="class-select-grid">
                   {PLAYER_CLASS_IDS.map((classId) => {
                     const entry = PLAYER_CLASSES[classId];
@@ -4810,6 +4800,17 @@ export default function Home() {
                   })}
                 </div>
                 <div className="class-actions"><button className="secondary" onClick={() => { gameRef.current.screen = "title"; setScreen("title"); }}>BACK</button><button onClick={startGame}>DESCEND AS {PLAYER_CLASSES[selectedClass].name.toUpperCase()}</button></div>
+                <div className="mobile-selection-nav" aria-label="Mobile run setup steps">
+                  <button className="secondary" onClick={() => {
+                    if (mobileSelectionStep === 0) { gameRef.current.screen = "title"; setScreen("title"); }
+                    else setMobileSelectionStep((mobileSelectionStep - 1) as 0 | 1);
+                  }}>{mobileSelectionStep === 0 ? "MENU" : "BACK"}</button>
+                  <span>{mobileSelectionStep + 1} / 3</span>
+                  <button onClick={() => {
+                    if (mobileSelectionStep === 2) startGame();
+                    else setMobileSelectionStep((mobileSelectionStep + 1) as 1 | 2);
+                  }}>{mobileSelectionStep === 2 ? `DESCEND AS ${PLAYER_CLASSES[selectedClass].name.toUpperCase()}` : "NEXT"}</button>
+                </div>
               </div>
             )}
             {screen === "playing" && hud.nearbyEquipmentId && !hud.nearbyCursedItemId && (() => {
