@@ -90,6 +90,17 @@ const EXIT_X = (MAP_W - 1.5) * TILE;
 const EXIT_Y = (MAP_H - 1.5) * TILE;
 const BOSS_VERSUS_DURATION = 3.4;
 
+type TouchInputState = {
+  moveX: number;
+  moveY: number;
+  aimX: number;
+  aimY: number;
+  aimActive: boolean;
+  firing: boolean;
+};
+
+type StickVector = { x: number; y: number; active: boolean };
+
 const EMPTY_ARMORY: ArmorySnapshot = { weapons: ["cleaver"], equipment: [], enemies: [], unlocks: [], runs: 0, kills: 0 };
 const RUN_HISTORY_STORAGE_KEY = "signal-depths-run-history";
 const META_PROGRESSION_STORAGE_KEY = "signal-depths-meta-progression";
@@ -2830,7 +2841,7 @@ function indexLivingEnemies(enemies: Enemy[], playerRoomIndex: number) {
   return { livingByHomeRoom, summonsByOwner, ninjasByHomeRoom, inPlayerRoom };
 }
 
-function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: ControlMode) {
+function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: ControlMode, touchInput?: TouchInputState) {
   if (game.screen !== "playing") return;
   game.elapsed += dt;
   game.roomClearFx = Math.max(0, game.roomClearFx - dt);
@@ -2926,13 +2937,20 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
   if (keys.has("arrowright") || keys.has("d")) mx += 1;
   if (keys.has("arrowup") || keys.has("w")) my -= 1;
   if (keys.has("arrowdown") || keys.has("s")) my += 1;
+  const analogMagnitude = touchInput ? Math.hypot(touchInput.moveX, touchInput.moveY) : 0;
+  const usingAnalogMove = analogMagnitude > .08;
+  if (usingAnalogMove && touchInput) {
+    mx = touchInput.moveX;
+    my = touchInput.moveY;
+  }
   if (mx || my) {
     const len = Math.hypot(mx, my);
-    mx /= len;
-    my /= len;
-    if (controlMode === "keyboard") {
-      p.dirX = mx;
-      p.dirY = my;
+    const intensity = usingAnalogMove ? Math.min(1, len) : 1;
+    mx = mx / len * intensity;
+    my = my / len * intensity;
+    if (usingAnalogMove ? !touchInput?.aimActive : controlMode === "keyboard") {
+      p.dirX = mx / intensity;
+      p.dirY = my / intensity;
     }
   }
   p.moving = Boolean(mx || my);
@@ -3560,6 +3578,56 @@ function runStatsFor(game: Game): RunStats {
   };
 }
 
+function MobileStick({ label, accent, onChange }: { label: string; accent: "move" | "aim"; onChange: (vector: StickVector) => void }) {
+  const activePointer = useRef<number | null>(null);
+  const [nub, setNub] = useState({ x: 0, y: 0 });
+
+  const updateStick = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const radius = Math.max(1, Math.min(rect.width, rect.height) * .34);
+    const rawX = event.clientX - (rect.left + rect.width / 2);
+    const rawY = event.clientY - (rect.top + rect.height / 2);
+    const distance = Math.hypot(rawX, rawY);
+    const scale = distance > radius ? radius / distance : 1;
+    const x = rawX * scale;
+    const y = rawY * scale;
+    const magnitude = Math.min(1, distance / radius);
+    setNub({ x, y });
+    onChange({ x: x / radius, y: y / radius, active: magnitude > .16 });
+  };
+
+  const releaseStick = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (activePointer.current !== event.pointerId) return;
+    activePointer.current = null;
+    setNub({ x: 0, y: 0 });
+    onChange({ x: 0, y: 0, active: false });
+  };
+
+  return (
+    <div
+      className={`mobile-stick mobile-stick-${accent}`}
+      role="group"
+      aria-label={label}
+      onPointerDown={(event) => {
+        if (activePointer.current !== null) return;
+        event.preventDefault();
+        activePointer.current = event.pointerId;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        updateStick(event);
+      }}
+      onPointerMove={(event) => {
+        if (activePointer.current === event.pointerId) updateStick(event);
+      }}
+      onPointerUp={releaseStick}
+      onPointerCancel={releaseStick}
+      onLostPointerCapture={releaseStick}
+    >
+      <span>{label}</span>
+      <i style={{ transform: `translate3d(${nub.x}px, ${nub.y}px, 0)` }} />
+    </div>
+  );
+}
+
 export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameRef = useRef<Game>(makeGame());
@@ -3568,6 +3636,7 @@ export default function Home() {
   const interactHoldTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shiftUsedForHeavy = useRef(false);
   const mouseAttackHeld = useRef(false);
+  const touchInputRef = useRef<TouchInputState>({ moveX: 0, moveY: 0, aimX: 0, aimY: 0, aimActive: false, firing: false });
   const [screen, setScreen] = useState<Screen>("title");
   const [hud, setHud] = useState<Hud>(initialHud);
   const [highScore, setHighScore] = useState(0);
@@ -3590,6 +3659,7 @@ export default function Home() {
   const [comfortSettings, setComfortSettings] = useState<ComfortSettings>(DEFAULT_COMFORT_SETTINGS);
   const comfortSettingsRef = useRef<ComfortSettings>(DEFAULT_COMFORT_SETTINGS);
   const [testerMode, setTesterMode] = useState(false);
+  const [mobileMapOpen, setMobileMapOpen] = useState(false);
   const testerModeRef = useRef(false);
   const helpPreviousScreen = useRef<Screen | null>(null);
 
@@ -3767,6 +3837,8 @@ export default function Home() {
     if (nextGame.testerMode) applyTesterLoadout(nextGame);
     gameRef.current = nextGame;
     keysRef.current.clear();
+    touchInputRef.current = { moveX: 0, moveY: 0, aimX: 0, aimY: 0, aimActive: false, firing: false };
+    setMobileMapOpen(false);
     setScreen("playing");
     setHud(makeHud(nextGame));
     beep(164, 0.1);
@@ -3874,7 +3946,7 @@ export default function Home() {
     if (game.screen !== "playing") return;
     const p = game.player;
     if (!game.testerMode && p.attackCd > 0) return;
-    if (controlModeRef.current === "keyboard" && comfortSettingsRef.current.keyboardAimAssist) applyKeyboardAimAssist(game);
+    if (controlModeRef.current === "keyboard" && comfortSettingsRef.current.keyboardAimAssist && !touchInputRef.current.aimActive) applyKeyboardAimAssist(game);
     if (p.classId === "mage") {
       const focus = CLASS_ARSENAL[p.classArsenalId];
       p.attackCd = game.testerMode ? 0 : focus.cooldown;
@@ -4092,6 +4164,7 @@ export default function Home() {
   }, []);
 
   const handleCanvasPointerDown = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (event.pointerType === "touch") return;
     if (controlModeRef.current !== "mouse" || (event.button !== 0 && event.button !== 2)) return;
     event.preventDefault();
     canvasRef.current?.focus();
@@ -4354,6 +4427,34 @@ export default function Home() {
     if (action === "fury") activateItem("fury");
   }, [activateItem, attack, dodge, drinkPotion, heavyAttack, interact]);
 
+  const handleTouchMove = useCallback((vector: StickVector) => {
+    touchInputRef.current.moveX = vector.active ? vector.x : 0;
+    touchInputRef.current.moveY = vector.active ? vector.y : 0;
+  }, []);
+
+  const handleTouchAim = useCallback((vector: StickVector) => {
+    const touchInput = touchInputRef.current;
+    touchInput.aimX = vector.active ? vector.x : 0;
+    touchInput.aimY = vector.active ? vector.y : 0;
+    touchInput.aimActive = vector.active;
+    touchInput.firing = vector.active;
+    if (!vector.active) return;
+    const length = Math.max(.001, Math.hypot(vector.x, vector.y));
+    const player = gameRef.current.player;
+    player.dirX = vector.x / length;
+    player.dirY = vector.y / length;
+    player.aimDistance = 92;
+    attack();
+  }, [attack]);
+
+  const togglePause = useCallback(() => {
+    const game = gameRef.current;
+    touchInputRef.current = { moveX: 0, moveY: 0, aimX: 0, aimY: 0, aimActive: false, firing: false };
+    if (game.screen === "playing") game.screen = "paused";
+    else if (game.screen === "paused") game.screen = "playing";
+    syncScreen(game);
+  }, [syncScreen]);
+
   useEffect(() => {
     setHighScore(storedNumber(localStorage.getItem("signal-depths-high-score")));
     setRunHistory(parseRunHistory(localStorage.getItem(RUN_HISTORY_STORAGE_KEY)));
@@ -4430,15 +4531,23 @@ export default function Home() {
 
   useEffect(() => {
     const stopHeldAttack = () => { mouseAttackHeld.current = false; };
+    const stopAllInput = () => {
+      mouseAttackHeld.current = false;
+      touchInputRef.current = { moveX: 0, moveY: 0, aimX: 0, aimY: 0, aimActive: false, firing: false };
+    };
     window.addEventListener("pointerup", stopHeldAttack);
     window.addEventListener("pointercancel", stopHeldAttack);
-    window.addEventListener("blur", stopHeldAttack);
+    window.addEventListener("blur", stopAllInput);
     return () => {
       window.removeEventListener("pointerup", stopHeldAttack);
       window.removeEventListener("pointercancel", stopHeldAttack);
-      window.removeEventListener("blur", stopHeldAttack);
+      window.removeEventListener("blur", stopAllInput);
     };
   }, []);
+
+  useEffect(() => {
+    if (screen !== "playing") touchInputRef.current = { moveX: 0, moveY: 0, aimX: 0, aimY: 0, aimActive: false, firing: false };
+  }, [screen]);
 
   useEffect(() => {
     const onDown = (event: KeyboardEvent) => {
@@ -4514,8 +4623,9 @@ export default function Home() {
       const dt = Math.min(0.033, (now - last) / 1000);
       last = now;
       const game = gameRef.current;
-      updateGame(game, keysRef.current, dt, controlModeRef.current);
+      updateGame(game, keysRef.current, dt, controlModeRef.current, touchInputRef.current);
       if (mouseAttackHeld.current && comfortSettingsRef.current.holdToAttack && controlModeRef.current === "mouse") attack();
+      if (touchInputRef.current.firing) attack();
       const ctx = canvasRef.current?.getContext("2d");
       if (ctx) renderGameV2(ctx, game, controlModeRef.current, comfortSettingsRef.current);
       hudClock += dt;
@@ -4542,6 +4652,12 @@ export default function Home() {
 
   return (
     <main className="game-page">
+      <div className="mobile-orientation-gate" role="status">
+        <div aria-hidden="true">↻</div>
+        <b>ROTATE TO LANDSCAPE</b>
+        <span>Twin-stick controls need a wider signal.</span>
+        <small>MOVE · AIM / FIRE · HEAVY · USE · DODGE</small>
+      </div>
       <header className="topbar">
         <div className="brand-lockup">
           <span className="brand-kicker">CHANNEL 13 // LIVE DESCENT</span>
@@ -4607,6 +4723,33 @@ export default function Home() {
               onPointerDown={handleCanvasPointerDown}
               onContextMenu={handleCanvasContextMenu}
             />
+            {screen === "playing" && (
+              <div className="mobile-game-ui" aria-label="Mobile game interface">
+                <div className="mobile-hud-vitals" aria-label={`Vital ${hud.hp} of ${hud.maxHp}, Drive ${hud.stamina} of 100`}>
+                  <div><span>VITAL</span><i><em style={{ width: `${Math.max(0, Math.min(100, hud.hp / hud.maxHp * 100))}%` }} /></i></div>
+                  <div><span>DRIVE</span><i><em style={{ width: `${Math.max(0, Math.min(100, hud.stamina))}%` }} /></i></div>
+                </div>
+                <div className="mobile-hud-clock"><b>{String(hud.time).padStart(3, "0")}</b><span>HYPE ×{hud.hype.toFixed(1)}</span></div>
+                <div className="mobile-objective"><span>DIRECTIVE</span><b>{hud.objective}</b></div>
+                <button className="mobile-pause" onClick={togglePause} aria-label="Pause game">Ⅱ</button>
+                <button className={`mobile-map ${mobileMapOpen ? "open" : ""}`} onClick={() => setMobileMapOpen((open) => !open)} aria-label={mobileMapOpen ? "Collapse floor map" : "Expand floor map"} aria-expanded={mobileMapOpen}>
+                  <MiniMap game={currentGame} />
+                  <span>FLOOR {String(currentGame.floorNumber).padStart(2, "0")}</span>
+                </button>
+                <div className="mobile-items" aria-label="Items">
+                  <button onClick={() => pressAction("potion")}><span>TONIC</span><b>{testerMode ? "∞" : hud.potions}</b></button>
+                  <button onClick={() => pressAction("bomb")}><span>BOMB</span><b>{testerMode ? "∞" : hud.bombs}</b></button>
+                  <button className={hud.furyTime > 0 ? "active" : ""} onClick={() => pressAction("fury")}><span>FURY</span><b>{testerMode ? "∞" : hud.furyTime > 0 ? `${Math.ceil(hud.furyTime)}s` : hud.furyVials}</b></button>
+                </div>
+                <MobileStick label="MOVE" accent="move" onChange={handleTouchMove} />
+                <MobileStick label="AIM / FIRE" accent="aim" onChange={handleTouchAim} />
+                <div className="mobile-actions" aria-label="Actions">
+                  <button className="mobile-action-heavy" onClick={() => pressAction("heavy")}>HEAVY</button>
+                  <button className="mobile-action-use" onClick={() => pressAction("interact")}>USE</button>
+                  <button className="mobile-action-dodge" onClick={() => pressAction("dodge")}>DODGE</button>
+                </div>
+              </div>
+            )}
             {screen === "title" && (
               <div className="game-overlay title-overlay">
                 <div className="signal-icon" aria-hidden="true"><span /></div>
@@ -4754,23 +4897,6 @@ export default function Home() {
         </aside>
       </section>
 
-      <section className="touch-controls" aria-label="Touch controls">
-        <div className="dpad">
-          <button aria-label="Move up" onPointerDown={() => keysRef.current.add("w")} onPointerUp={() => keysRef.current.delete("w")}>▲</button>
-          <button aria-label="Move left" onPointerDown={() => keysRef.current.add("a")} onPointerUp={() => keysRef.current.delete("a")}>◀</button>
-          <button aria-label="Move down" onPointerDown={() => keysRef.current.add("s")} onPointerUp={() => keysRef.current.delete("s")}>▼</button>
-          <button aria-label="Move right" onPointerDown={() => keysRef.current.add("d")} onPointerUp={() => keysRef.current.delete("d")}>▶</button>
-        </div>
-        <div className="action-pad">
-          <button onClick={() => pressAction("potion")}>1 TONIC</button>
-          <button onClick={() => pressAction("bomb")}>2 BOMB</button>
-          <button onClick={() => pressAction("fury")}>3 FURY</button>
-          <button onClick={() => pressAction("interact")}>USE</button>
-          <button onClick={() => pressAction("dodge")}>DODGE</button>
-          <button className="heavy-button" onClick={() => pressAction("heavy")}>HEAVY</button>
-          <button className="attack-button" onClick={() => pressAction("attack")}>HIT</button>
-        </div>
-      </section>
       {helpOpen && (
         <HelpGuide
           section={helpSection}
