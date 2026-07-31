@@ -2230,11 +2230,38 @@ function drawBossVersusSplash(ctx: CanvasRenderingContext2D, game: Game) {
   ctx.restore();
 }
 
-function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: ControlMode, comfort: ComfortSettings = DEFAULT_COMFORT_SETTINGS) {
+function drawMobileArenaBackdrop(ctx: CanvasRenderingContext2D, width: number, height: number) {
+  ctx.fillStyle = "#08110f";
+  ctx.fillRect(0, 0, width, height);
+  for (let y = 0; y < height; y += 64) {
+    for (let x = 0; x < width; x += 64) {
+      ctx.fillStyle = (x / 64 + y / 64) % 2 ? "#0d1815" : "#101c18";
+      ctx.fillRect(x, y, 64, 64);
+      ctx.strokeStyle = "#1c2d27";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x + 1, y + 1, 62, 62);
+      ctx.fillStyle = "#294138";
+      ctx.fillRect(x + 8, y + 9, 6, 4);
+      ctx.fillRect(x + 49, y + 46, 6, 6);
+    }
+  }
+  const vignette = ctx.createRadialGradient(width / 2, height / 2, height * .22, width / 2, height / 2, width * .62);
+  vignette.addColorStop(0, "rgba(4,8,7,0)");
+  vignette.addColorStop(1, "rgba(1,3,3,.72)");
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, width, height);
+}
+
+function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: ControlMode, comfort: ComfortSettings = DEFAULT_COMFORT_SETTINGS, mobileView = false) {
+  const viewWidth = mobileView ? ctx.canvas.width : WIDTH;
+  const stageLeft = mobileView ? (viewWidth - 512) / 2 : 128;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.imageSmoothingEnabled = false;
-  ctx.fillStyle = "#050706";
-  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+  if (mobileView) drawMobileArenaBackdrop(ctx, viewWidth, HEIGHT);
+  else {
+    ctx.fillStyle = "#050706";
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+  }
 
   const current = roomFor(game.player.x, game.player.y);
   const roomNumber = current.row * ROOM_COLS + current.col + 1;
@@ -2252,9 +2279,9 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: Co
 
   ctx.save();
   ctx.beginPath();
-  ctx.rect(128, 0, 512, 512);
+  ctx.rect(stageLeft, 0, 512, 512);
   ctx.clip();
-  ctx.setTransform(2, 0, 0, 2, WIDTH / 2 - camX * 2 + shakeX, HEIGHT / 2 - camY * 2 + shakeY);
+  ctx.setTransform(2, 0, 0, 2, viewWidth / 2 - camX * 2 + shakeX, HEIGHT / 2 - camY * 2 + shakeY);
 
   // Only the active room can reach the clipped viewport. Limiting tile work here
   // avoids redrawing the other eleven rooms on every animation frame.
@@ -2735,7 +2762,7 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: Co
 
   const visibilityMultiplier = challengeEffectsFor(game).visibilityRadiusMultiplier;
   if (visibilityMultiplier < 1) {
-    const playerScreenX = WIDTH / 2 + (game.player.x - camX) * 2 + shakeX;
+    const playerScreenX = viewWidth / 2 + (game.player.x - camX) * 2 + shakeX;
     const playerScreenY = HEIGHT / 2 + (game.player.y - camY) * 2 + shakeY;
     const radius = 210 * visibilityMultiplier;
     const blackout = ctx.createRadialGradient(playerScreenX, playerScreenY, radius * .36, playerScreenX, playerScreenY, radius);
@@ -2744,39 +2771,45 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: Co
     blackout.addColorStop(1, "rgba(1,3,3,.94)");
     ctx.save();
     ctx.beginPath();
-    ctx.rect(128, 0, 512, HEIGHT);
+    ctx.rect(stageLeft, 0, 512, HEIGHT);
     ctx.clip();
     ctx.fillStyle = blackout;
-    ctx.fillRect(128, 0, 512, HEIGHT);
+    ctx.fillRect(stageLeft, 0, 512, HEIGHT);
     ctx.restore();
   }
 
-  // The side bands are literal unknown space: only the occupied room is broadcast.
-  const shade = ctx.createLinearGradient(0, 0, 128, 0);
-  shade.addColorStop(0, "#020303");
-  shade.addColorStop(1, "#0a100e");
-  ctx.fillStyle = shade;
-  ctx.fillRect(0, 0, 128, HEIGHT);
-  ctx.save();
-  ctx.translate(WIDTH, 0);
-  ctx.scale(-1, 1);
-  ctx.fillRect(0, 0, 128, HEIGHT);
-  ctx.restore();
-  ctx.strokeStyle = "#3b554c";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(128, 1, 512, 510);
-  drawPixelText(ctx, `ROOM 0${roomNumber}`, 66, 42, "#f4d35e", "center");
-  drawPixelText(ctx, "UNKNOWN", 702, 42, "#52645d", "center");
-  ctx.save();
-  ctx.translate(68, HEIGHT / 2);
-  ctx.rotate(-Math.PI / 2);
-  drawPixelText(ctx, "NO SIGNAL BEYOND THIS ROOM", 0, 0, "#34463f", "center");
-  ctx.restore();
+  if (mobileView) {
+    ctx.strokeStyle = "rgba(74,111,97,.42)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(stageLeft, 1, 512, 510);
+  } else {
+    // Desktop keeps the literal unknown-space broadcast bands.
+    const shade = ctx.createLinearGradient(0, 0, 128, 0);
+    shade.addColorStop(0, "#020303");
+    shade.addColorStop(1, "#0a100e");
+    ctx.fillStyle = shade;
+    ctx.fillRect(0, 0, 128, HEIGHT);
+    ctx.save();
+    ctx.translate(WIDTH, 0);
+    ctx.scale(-1, 1);
+    ctx.fillRect(0, 0, 128, HEIGHT);
+    ctx.restore();
+    ctx.strokeStyle = "#3b554c";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(128, 1, 512, 510);
+    drawPixelText(ctx, `ROOM 0${roomNumber}`, 66, 42, "#f4d35e", "center");
+    drawPixelText(ctx, "UNKNOWN", 702, 42, "#52645d", "center");
+    ctx.save();
+    ctx.translate(68, HEIGHT / 2);
+    ctx.rotate(-Math.PI / 2);
+    drawPixelText(ctx, "NO SIGNAL BEYOND THIS ROOM", 0, 0, "#34463f", "center");
+    ctx.restore();
+  }
 
   const showingBossBar = Boolean(boss && (game.bossEngaged || game.bossIntroTime > 0) && currentRoomIndex === boss?.homeRoomIndex);
   if (boss && showingBossBar) {
     const phase = boss.variant === "ninja" ? null : bossPhaseForHealth(boss.hp, boss.maxHp);
-    const barX = 224;
+    const barX = viewWidth / 2 - 160;
     const barY = 28;
     const barWidth = 320;
     ctx.fillStyle = "rgba(5,7,6,.9)";
@@ -2795,32 +2828,35 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: Co
   if (game.bossAwakenTime > 0) {
     const progress = 1 - game.bossAwakenTime / 2.6;
     ctx.fillStyle = "rgba(5,7,6,.82)";
-    ctx.fillRect(176, 204, 416, 82);
+    ctx.fillRect(viewWidth / 2 - 208, 204, 416, 82);
     ctx.strokeStyle = "#f4d35e";
     ctx.lineWidth = 2;
-    ctx.strokeRect(184, 212, 400, 66);
-    drawPixelText(ctx, "FINAL SIGNAL ACCEPTED", WIDTH / 2, 234, "#fff3b0", "center");
+    ctx.strokeRect(viewWidth / 2 - 200, 212, 400, 66);
+    drawPixelText(ctx, "FINAL SIGNAL ACCEPTED", viewWidth / 2, 234, "#fff3b0", "center");
     const wakingBoss = game.enemies.find((enemy) => enemy.kind === "boss");
-    drawPixelText(ctx, wakingBoss?.variant === "ninja" ? "SHADOW SEAL // BREAKING" : wakingBoss?.variant === "conductor" ? "STATIC ARRAY // POWERING" : "WARDEN CORE // POWERING", WIDTH / 2, 254, wakingBoss?.variant === "ninja" ? "#a78bfa" : wakingBoss?.variant === "conductor" ? "#f4d35e" : "#ff8fab", "center");
+    drawPixelText(ctx, wakingBoss?.variant === "ninja" ? "SHADOW SEAL // BREAKING" : wakingBoss?.variant === "conductor" ? "STATIC ARRAY // POWERING" : "WARDEN CORE // POWERING", viewWidth / 2, 254, wakingBoss?.variant === "ninja" ? "#a78bfa" : wakingBoss?.variant === "conductor" ? "#f4d35e" : "#ff8fab", "center");
     ctx.fillStyle = "#3a2d14";
-    ctx.fillRect(256, 264, 256, 5);
+    ctx.fillRect(viewWidth / 2 - 128, 264, 256, 5);
     ctx.fillStyle = "#f4d35e";
-    ctx.fillRect(256, 264, 256 * Math.max(0, Math.min(1, progress)), 5);
+    ctx.fillRect(viewWidth / 2 - 128, 264, 256 * Math.max(0, Math.min(1, progress)), 5);
   } else if (game.bossIntroTime > 0) {
+    ctx.save();
+    ctx.translate((viewWidth - WIDTH) / 2, 0);
     drawBossVersusSplash(ctx, game);
+    ctx.restore();
   }
 
   if (game.bossPhaseFx > 0) {
     const alpha = Math.min(.36, game.bossPhaseFx * .3);
     ctx.fillStyle = `rgba(255,77,109,${alpha})`;
-    ctx.fillRect(128, 0, 512, HEIGHT);
-    drawPixelText(ctx, `PHASE SHIFT // ${game.bossPhaseName}`, WIDTH / 2, HEIGHT / 2, "#ffffff", "center");
+    ctx.fillRect(stageLeft, 0, 512, HEIGHT);
+    drawPixelText(ctx, `PHASE SHIFT // ${game.bossPhaseName}`, viewWidth / 2, HEIGHT / 2, "#ffffff", "center");
   }
 
   if (game.screen === "paused") {
     ctx.fillStyle = "rgba(4,6,6,.78)";
-    ctx.fillRect(0, 0, WIDTH, HEIGHT);
-    drawPixelText(ctx, "TRANSMISSION PAUSED", WIDTH / 2, HEIGHT / 2, "#f4d35e", "center");
+    ctx.fillRect(0, 0, viewWidth, HEIGHT);
+    drawPixelText(ctx, "TRANSMISSION PAUSED", viewWidth / 2, HEIGHT / 2, "#f4d35e", "center");
   }
 }
 
@@ -3637,6 +3673,8 @@ export default function Home() {
   const shiftUsedForHeavy = useRef(false);
   const mouseAttackHeld = useRef(false);
   const touchInputRef = useRef<TouchInputState>({ moveX: 0, moveY: 0, aimX: 0, aimY: 0, aimActive: false, firing: false });
+  const mobileViewRef = useRef(false);
+  const [canvasWidth, setCanvasWidth] = useState(WIDTH);
   const [screen, setScreen] = useState<Screen>("title");
   const [hud, setHud] = useState<Hud>(initialHud);
   const [highScore, setHighScore] = useState(0);
@@ -4550,6 +4588,28 @@ export default function Home() {
   }, [screen]);
 
   useEffect(() => {
+    let resizeFrame = 0;
+    const syncCanvasViewport = () => {
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(() => {
+        const mobileView = window.innerWidth <= 1100 && window.innerWidth > window.innerHeight;
+        mobileViewRef.current = mobileView;
+        const frame = canvasRef.current?.parentElement?.getBoundingClientRect();
+        const aspect = frame && frame.height > 0 ? frame.width / frame.height : window.innerWidth / Math.max(1, window.innerHeight);
+        setCanvasWidth(mobileView ? Math.max(WIDTH, Math.round(HEIGHT * aspect)) : WIDTH);
+      });
+    };
+    syncCanvasViewport();
+    window.addEventListener("resize", syncCanvasViewport);
+    window.addEventListener("orientationchange", syncCanvasViewport);
+    return () => {
+      cancelAnimationFrame(resizeFrame);
+      window.removeEventListener("resize", syncCanvasViewport);
+      window.removeEventListener("orientationchange", syncCanvasViewport);
+    };
+  }, []);
+
+  useEffect(() => {
     const onDown = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
       if (["arrowup", "arrowdown", "arrowleft", "arrowright", " "].includes(key)) event.preventDefault();
@@ -4627,7 +4687,7 @@ export default function Home() {
       if (mouseAttackHeld.current && comfortSettingsRef.current.holdToAttack && controlModeRef.current === "mouse") attack();
       if (touchInputRef.current.firing) attack();
       const ctx = canvasRef.current?.getContext("2d");
-      if (ctx) renderGameV2(ctx, game, controlModeRef.current, comfortSettingsRef.current);
+      if (ctx) renderGameV2(ctx, game, controlModeRef.current, comfortSettingsRef.current, mobileViewRef.current);
       hudClock += dt;
       if (hudClock > 0.1) {
         hudClock = 0;
@@ -4714,7 +4774,7 @@ export default function Home() {
           <div className="canvas-frame">
             <canvas
               ref={canvasRef}
-              width={WIDTH}
+              width={canvasWidth}
               height={HEIGHT}
               tabIndex={0}
               className={controlMode === "mouse" ? "mouse-aim" : ""}
@@ -4725,18 +4785,31 @@ export default function Home() {
             />
             {screen === "playing" && (
               <div className="mobile-game-ui" aria-label="Mobile game interface">
+                <div className="mobile-status-cluster" aria-label={`Vital ${hud.hp} of ${hud.maxHp}, Drive ${hud.stamina} of 100`}>
+                  <div className="mobile-status-row vital"><span>VITAL</span><i><em style={{ width: `${Math.max(0, Math.min(100, hud.hp / hud.maxHp * 100))}%` }} /></i><b>{hud.hp} / {hud.maxHp}</b></div>
+                  <div className="mobile-status-row drive"><span>DRIVE</span><i><em style={{ width: `${Math.max(0, Math.min(100, hud.stamina))}%` }} /></i><b>{hud.stamina} / 100</b></div>
+                  <div className="mobile-directive"><span>▣</span><b>{hud.objective}</b></div>
+                  <div className="mobile-pylon-dots" aria-label={`${hud.pylons} of 3 signal pylons active`}>{Array.from({ length: 3 }, (_, index) => <i key={index} className={index < hud.pylons ? "active" : ""} />)}</div>
+                </div>
+                <div className="mobile-time-cluster"><b>{String(Math.floor(hud.time / 60)).padStart(2, "0")}:{String(hud.time % 60).padStart(2, "0")}</b><span>HYPE ×{hud.hype.toFixed(1)}</span></div>
+                {(() => {
+                  const boss = currentGame.enemies.find((enemy) => enemy.kind === "boss" && enemy.hp > 0);
+                  if (!boss || (!currentGame.bossEngaged && currentGame.bossIntroTime <= 0)) return null;
+                  return <div className="mobile-boss-bar"><span>{bossDisplayName(boss)}</span><i><em style={{ width: `${Math.max(0, Math.min(100, boss.hp / boss.maxHp * 100))}%` }} /></i></div>;
+                })()}
                 <button className="mobile-pause" onClick={togglePause} aria-label="Pause game">Ⅱ</button>
+                <div className="mobile-map-panel"><MiniMap game={currentGame} /><span>FLOOR {String(currentGame.floorNumber).padStart(2, "0")}</span></div>
                 <div className="mobile-items" aria-label="Items">
-                  <button onClick={() => pressAction("potion")}><span>TONIC</span><b>{testerMode ? "∞" : hud.potions}</b></button>
-                  <button onClick={() => pressAction("bomb")}><span>BOMB</span><b>{testerMode ? "∞" : hud.bombs}</b></button>
-                  <button className={hud.furyTime > 0 ? "active" : ""} onClick={() => pressAction("fury")}><span>FURY</span><b>{testerMode ? "∞" : hud.furyTime > 0 ? `${Math.ceil(hud.furyTime)}s` : hud.furyVials}</b></button>
+                  <button className="tonic" onClick={() => pressAction("potion")}><i>✚</i><b>{testerMode ? "∞" : hud.potions}</b><span>TONIC</span></button>
+                  <button className="bomb" onClick={() => pressAction("bomb")}><i>●</i><b>{testerMode ? "∞" : hud.bombs}</b><span>BOMB</span></button>
+                  <button className={`fury ${hud.furyTime > 0 ? "active" : ""}`} onClick={() => pressAction("fury")}><i>☠</i><b>{testerMode ? "∞" : hud.furyTime > 0 ? `${Math.ceil(hud.furyTime)}s` : hud.furyVials}</b><span>FURY</span></button>
                 </div>
                 <MobileStick label="MOVE" accent="move" onChange={handleTouchMove} />
                 <MobileStick label="AIM / FIRE" accent="aim" onChange={handleTouchAim} />
                 <div className="mobile-actions" aria-label="Actions">
-                  <button className="mobile-action-heavy" onClick={() => pressAction("heavy")}>HEAVY</button>
-                  <button className="mobile-action-use" onPointerDown={(event) => { event.preventDefault(); pressAction("interact"); }} aria-label="Interact, same as F on desktop">F / USE</button>
-                  <button className="mobile-action-dodge" onClick={() => pressAction("dodge")}>DODGE</button>
+                  <button className="mobile-action-heavy" onClick={() => pressAction("heavy")}><i>✦</i><span>HEAVY</span></button>
+                  <button className="mobile-action-dodge" onClick={() => pressAction("dodge")}><i>»</i><span>DODGE</span></button>
+                  <button className="mobile-action-use" onPointerDown={(event) => { event.preventDefault(); pressAction("interact"); }} aria-label="Interact, same as F on desktop"><i>F</i><span>USE</span></button>
                 </div>
               </div>
             )}
