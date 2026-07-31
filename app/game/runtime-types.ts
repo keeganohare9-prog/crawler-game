@@ -8,6 +8,8 @@ import type { RunUpgradeId } from "./progression";
 import type { SecretChamber } from "./secrets";
 import type { AudienceModifierId } from "./broadcast-features";
 import type { FloorNavigationMap } from "./floor-navigation";
+import type { StarterKitId } from "./meta-progression";
+import type { ChallengeModifierId } from "./challenges";
 
 export type EnemyKind = "skitter" | "warden" | "spitter" | "healer" | "mimic" | "volatile" | "broadcaster" | "bulwark" | "burrower" | "ninja" | "boss";
 
@@ -134,6 +136,8 @@ export type Game = {
   time: number;
   score: number;
   contractId: BroadcastContractId;
+  starterKitId: StarterKitId | null;
+  challengeIds: ChallengeModifierId[];
   scoreMultiplier: number;
   hype: number;
   kills: number;
@@ -161,6 +165,7 @@ export type Game = {
   roomClearFx: number;
   roomClearRoomIndex: number;
   currentRoomIndex: number;
+  routeTaken: RoomKind[];
   upgrades: RunUpgradeId[];
   upgradeChoices: RunUpgradeId[];
   activeDareId: string;
@@ -181,6 +186,8 @@ export type Game = {
   lastBossPhase: string;
   resultsSaved: boolean;
   newUnlocks: string[];
+  newDiscoveries: string[];
+  fragmentReward: number;
   sponsorHypeChecked: number;
   runMode: "standard" | "daily";
   dailyKey: string | null;

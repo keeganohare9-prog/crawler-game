@@ -25,6 +25,41 @@ import {
 } from "./game/broadcast-features";
 import { generateSecretChambers, secretRewardLabel } from "./game/secrets";
 import {
+  STARTER_KITS,
+  calculateSignalFragmentReward,
+  getStarterKit,
+  parseMetaProgressionProfile,
+  purchaseStarterKit,
+  selectStarterKit,
+  updateMetaProgressionAfterRun,
+  type MetaProgressionProfile,
+  type StarterKitId,
+} from "./game/meta-progression";
+import {
+  CHALLENGE_MODIFIERS,
+  aggregateChallengeEffects,
+  applyChallengeReward,
+  challengeFragmentMultiplier,
+  challengeScoreMultiplier,
+  isChallengeUnlocked,
+  validateChallengeSelection,
+  type ChallengeModifierId,
+  type ChallengeProgress,
+} from "./game/challenges";
+import {
+  ARCHIVE_CATEGORIES,
+  ARCHIVE_ENTRIES,
+  acknowledgeArchiveDiscoveries,
+  archiveCategoryProgress,
+  archiveDiscoveryCallouts,
+  archivePresentation,
+  mergeCompletedRunDiscoveries,
+  parseArchiveProfile,
+  unacknowledgedArchiveIds,
+  type ArchiveCategoryId,
+  type ArchiveDiscoveryProfile,
+} from "./game/archive";
+import {
   DEFAULT_COMFORT_SETTINGS,
   type ArmorySnapshot,
   type BroadcastContractId,
@@ -57,6 +92,10 @@ const BOSS_VERSUS_DURATION = 3.4;
 
 const EMPTY_ARMORY: ArmorySnapshot = { weapons: ["cleaver"], equipment: [], enemies: [], unlocks: [], runs: 0, kills: 0 };
 const RUN_HISTORY_STORAGE_KEY = "signal-depths-run-history";
+const META_PROGRESSION_STORAGE_KEY = "signal-depths-meta-progression";
+const CHALLENGE_PROGRESS_STORAGE_KEY = "signal-depths-challenge-progress";
+const SELECTED_CHALLENGES_STORAGE_KEY = "signal-depths-selected-challenges";
+const ARCHIVE_STORAGE_KEY = "signal-depths-signal-archive";
 
 function parseStoredArray<T>(raw: string | null, fallback: readonly T[], isValid: (value: unknown) => value is T): T[] {
   if (!raw) return [...fallback];
@@ -71,6 +110,26 @@ function parseStoredArray<T>(raw: string | null, fallback: readonly T[], isValid
 function storedNumber(raw: string | null) {
   const value = Number(raw ?? 0);
   return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function parseChallengeProgress(raw: string | null): ChallengeProgress {
+  try {
+    const value = raw ? JSON.parse(raw) as Record<string, unknown> : {};
+    const read = (key: keyof ChallengeProgress) => {
+      const candidate = Number(value?.[key] ?? 0);
+      return Number.isFinite(candidate) && candidate >= 0 ? candidate : 0;
+    };
+    return {
+      lifetimeRuns: read("lifetimeRuns"),
+      lifetimeKills: read("lifetimeKills"),
+      bossesDefeated: read("bossesDefeated"),
+      highestHype: read("highestHype"),
+      secretsFound: read("secretsFound"),
+      daresCompleted: read("daresCompleted"),
+    };
+  } catch {
+    return {};
+  }
 }
 
 const initialHud: Hud = {
@@ -193,9 +252,21 @@ function routeHint(kind: RoomKind) {
 let activeMazeRooms = new Set<number>();
 let activeFloorNavigation: FloorNavigationMap | null = null;
 
-function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerClassId = "knight", contractId: BroadcastContractId = "redline", floorNumber = 1, runMode: "standard" | "daily" = "standard", dailyKey: string | null = null): Game {
+function makeGame(
+  screen: Screen = "title",
+  floorSeed = 40_413,
+  classId: PlayerClassId = "knight",
+  contractId: BroadcastContractId = "redline",
+  floorNumber = 1,
+  runMode: "standard" | "daily" = "standard",
+  dailyKey: string | null = null,
+  starterKitId: StarterKitId | null = null,
+  challengeIds: ChallengeModifierId[] = [],
+): Game {
   const playerClass = PLAYER_CLASSES[classId];
   const contract = BROADCAST_CONTRACTS[contractId];
+  const starterKit = starterKitId && getStarterKit(starterKitId).classId === classId ? getStarterKit(starterKitId) : null;
+  const challengeEffects = aggregateChallengeEffects(challengeIds);
   const floor = generateFloor(floorSeed, { roomCount: ROOM_COLS * ROOM_ROWS });
   const navigation = buildFloorNavigation(floor, { columns: ROOM_COLS, rows: ROOM_ROWS });
   activeFloorNavigation = navigation;
@@ -223,14 +294,15 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
   const enemy = (kind: EnemyKind, tx: number, ty: number, roomIndex: number, elite = false): Enemy => {
     const stats = enemyStats[kind];
     const progression = kind === "boss" ? 1 : .82 + (roomIndex / Math.max(1, roomKinds.length - 1)) * .28;
-    const hp = Math.round(stats.hp * progression * (elite ? 1.08 : 1) * contract.enemyHealth);
+    const challengeElite = elite || (kind !== "boss" && ((nextId * 73 + floorSeed) % 1000) / 1000 < challengeEffects.eliteChanceBonus);
+    const hp = Math.round(stats.hp * progression * (challengeElite ? 1.08 : 1) * contract.enemyHealth * challengeEffects.enemyHealthMultiplier);
     return {
       id: nextId++, kind, x: tx * TILE + TILE / 2, y: ty * TILE + TILE / 2,
-      cooldown: Math.random() * 1.2, flash: 0, windup: 0, recovery: 0, elite, homeRoomIndex: roomIndex,
+      cooldown: Math.random() * 1.2, flash: 0, windup: 0, recovery: 0, elite: challengeElite, homeRoomIndex: roomIndex,
       ...stats,
       hp, maxHp: hp,
-      damage: Math.max(4, Math.round(stats.damage * progression)),
-      speed: stats.speed * (.92 + progression * .08) * contract.enemySpeed,
+      damage: Math.max(4, Math.round(stats.damage * progression * challengeEffects.enemyDamageMultiplier)),
+      speed: stats.speed * (.92 + progression * .08) * contract.enemySpeed * challengeEffects.enemySpeedMultiplier,
     };
   };
 
@@ -274,13 +346,13 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
   const dare = chooseAudienceDares(floorSeed, classId === "knight" ? [] : ["close_quarters"], 1)[0] ?? AUDIENCE_DARES[0];
   const secrets = generateSecretChambers(floorSeed, roomKinds, ROOM_COLS, TILE);
 
-  return {
+  const game: Game = {
     screen,
     testerMode: false,
     floorNumber,
     player: {
       classId,
-      classArsenalId: classId === "archer" ? "relay-recurve" : "signal-grimoire",
+      classArsenalId: starterKit?.arsenalId ?? (classId === "archer" ? "relay-recurve" : "signal-grimoire"),
       x: 2.5 * TILE,
       y: 2.5 * TILE,
       hp: Math.round(playerClass.hp * contract.playerHealth),
@@ -296,12 +368,12 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
       attackFx: 0,
       dodgeCd: 0,
       invuln: 0,
-      potions: 2,
-      bombs: contract.startingBombs,
-      furyVials: contract.startingFury,
+      potions: Math.max(0, (starterKit?.startingItems.tonics ?? 2) + challengeEffects.startingTonicDelta),
+      bombs: contract.startingBombs + (starterKit?.startingItems.bombs ?? 0),
+      furyVials: contract.startingFury + (starterKit?.startingItems.furyVials ?? 0),
       furyTime: 0,
-      weaponId: "cleaver",
-      ammo: 0,
+      weaponId: starterKit?.weaponId ?? "cleaver",
+      ammo: getWeapon(starterKit?.weaponId ?? "cleaver").ammo ?? 0,
       moving: false,
       stepTimer: 0,
       heavyFx: 0,
@@ -323,10 +395,12 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     groundEquipment: [],
     groundCursedItems: [],
     explored: new Set(["0"]),
-    time: 720,
+    time: Math.round(720 * challengeEffects.timeLimitMultiplier),
     score: 0,
     contractId,
-    scoreMultiplier: contract.scoreMultiplier,
+    starterKitId: starterKit?.id ?? null,
+    challengeIds: [...challengeIds],
+    scoreMultiplier: contract.scoreMultiplier * challengeScoreMultiplier(challengeIds),
     hype: contract.startingHype,
     kills: 0,
     bossDead: false,
@@ -353,6 +427,7 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     roomClearFx: 0,
     roomClearRoomIndex: -1,
     currentRoomIndex: 0,
+    routeTaken: [roomKinds[0] ?? "safe"],
     upgrades: [],
     upgradeChoices: [],
     activeDareId: dare.id,
@@ -373,6 +448,8 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     lastBossPhase: "",
     resultsSaved: false,
     newUnlocks: [],
+    newDiscoveries: [],
+    fragmentReward: 0,
     sponsorHypeChecked: contract.startingHype,
     runMode,
     dailyKey,
@@ -387,13 +464,15 @@ function makeGame(screen: Screen = "title", floorSeed = 40_413, classId: PlayerC
     cursedMaxHpLoss: 0,
     lastCombatTime: 0,
   };
+  if (challengeEffects.forceCursedItem) carryCursedItem(game, selectCursedItem(`${floorSeed}:challenge`).id);
+  return game;
 }
 
 function makeNextFloor(game: Game) {
   const nextSeed = game.runMode === "daily" && game.dailyKey
     ? dailySeed(`${game.dailyKey}:floor:${game.floorNumber + 1}`)
     : Math.floor(Math.random() * 1_000_000_000);
-  const next = makeGame("playing", nextSeed, game.player.classId, game.contractId, game.floorNumber + 1, game.runMode, game.dailyKey);
+  const next = makeGame("playing", nextSeed, game.player.classId, game.contractId, game.floorNumber + 1, game.runMode, game.dailyKey, game.starterKitId, game.challengeIds);
   next.testerMode = game.testerMode;
   next.player = {
     ...next.player,
@@ -413,6 +492,7 @@ function makeNextFloor(game: Game) {
   next.kills = game.kills;
   next.priorRoomsCleared = game.priorRoomsCleared + game.roomsCleared;
   next.priorRoomsExplored = game.priorRoomsExplored + game.explored.size;
+  next.routeTaken = [...game.routeTaken, next.roomKinds[0] ?? "safe"];
   next.upgrades = [...game.upgrades];
   next.equipped = { ...game.equipped };
   next.discoveredEquipment = [...game.discoveredEquipment];
@@ -855,10 +935,15 @@ function audienceModifierFor(game: Game) {
   return AUDIENCE_MODIFIERS.find((modifier) => modifier.id === game.activeAudienceModifierId) ?? null;
 }
 
+function challengeEffectsFor(game: Game) {
+  return aggregateChallengeEffects(game.challengeIds);
+}
+
 function healPlayer(game: Game, amount: number) {
-  if (amount <= 0 || audienceModifierFor(game)?.disableHealing) return 0;
+  const effects = challengeEffectsFor(game);
+  if (amount <= 0 || audienceModifierFor(game)?.disableHealing || effects.disableHealing) return 0;
   const before = game.player.hp;
-  game.player.hp = Math.min(game.player.maxHp, game.player.hp + amount);
+  game.player.hp = Math.min(game.player.maxHp, game.player.hp + amount * effects.healingMultiplier);
   return game.player.hp - before;
 }
 
@@ -971,13 +1056,15 @@ function damageEnemy(game: Game, target: Enemy, rawDamage: number) {
 function spawnRuntimeEnemy(game: Game, kind: EnemyKind, x: number, y: number, roomIndex: number, summonerId?: number) {
   const stats = enemyStats[kind];
   const contract = BROADCAST_CONTRACTS[game.contractId];
+  const challengeEffects = challengeEffectsFor(game);
   const progression = .82 + (roomIndex / Math.max(1, game.roomKinds.length - 1)) * .28;
-  const hp = Math.round(stats.hp * progression * contract.enemyHealth);
+  const elite = kind !== "boss" && ((game.nextId * 73 + game.floorSeed) % 1000) / 1000 < challengeEffects.eliteChanceBonus;
+  const hp = Math.round(stats.hp * progression * contract.enemyHealth * challengeEffects.enemyHealthMultiplier * (elite ? 1.08 : 1));
   const spawned: Enemy = {
     id: game.nextId++, kind, x, y, hp, maxHp: hp,
-    speed: stats.speed * (.92 + progression * .08) * contract.enemySpeed,
-    damage: Math.max(4, Math.round(stats.damage * progression)),
-    cooldown: .45, flash: .18, windup: 0, recovery: .3, elite: false, homeRoomIndex: roomIndex, summonerId,
+    speed: stats.speed * (.92 + progression * .08) * contract.enemySpeed * challengeEffects.enemySpeedMultiplier,
+    damage: Math.max(4, Math.round(stats.damage * progression * challengeEffects.enemyDamageMultiplier)),
+    cooldown: .45, flash: .18, windup: 0, recovery: .3, elite, homeRoomIndex: roomIndex, summonerId,
   };
   applyAudienceSpeed(game, spawned);
   game.enemies.push(spawned);
@@ -1085,8 +1172,10 @@ function releaseLootAmbush(game: Game, chest: Chest) {
   ];
   spawns.forEach(({ kind, tx, ty }) => {
     const stats = enemyStats[kind];
-    const hp = Math.round(stats.hp * progression);
-    const spawned: Enemy = { id:game.nextId++, kind, x:(room.col * 8 + tx) * TILE, y:(room.row * 8 + ty) * TILE, hp, maxHp:hp, speed:stats.speed, damage:Math.round(stats.damage * progression), cooldown:.4 + Math.random() * .8, flash:.2, windup:0, recovery:.25, elite:false, homeRoomIndex:roomIndex };
+    const effects = challengeEffectsFor(game);
+    const elite = ((game.nextId * 73 + game.floorSeed) % 1000) / 1000 < effects.eliteChanceBonus;
+    const hp = Math.round(stats.hp * progression * effects.enemyHealthMultiplier * (elite ? 1.08 : 1));
+    const spawned: Enemy = { id:game.nextId++, kind, x:(room.col * 8 + tx) * TILE, y:(room.row * 8 + ty) * TILE, hp, maxHp:hp, speed:stats.speed * effects.enemySpeedMultiplier, damage:Math.round(stats.damage * progression * effects.enemyDamageMultiplier), cooldown:.4 + Math.random() * .8, flash:.2, windup:0, recovery:.25, elite, homeRoomIndex:roomIndex };
     applyAudienceSpeed(game, spawned);
     game.enemies.push(spawned);
   });
@@ -2633,6 +2722,24 @@ function renderGameV2(ctx: CanvasRenderingContext2D, game: Game, controlMode: Co
   if (prompt) drawPixelText(ctx, prompt, p.x, p.y - 34, "#fff3b0", "center");
   ctx.restore();
 
+  const visibilityMultiplier = challengeEffectsFor(game).visibilityRadiusMultiplier;
+  if (visibilityMultiplier < 1) {
+    const playerScreenX = WIDTH / 2 + (game.player.x - camX) * 2 + shakeX;
+    const playerScreenY = HEIGHT / 2 + (game.player.y - camY) * 2 + shakeY;
+    const radius = 210 * visibilityMultiplier;
+    const blackout = ctx.createRadialGradient(playerScreenX, playerScreenY, radius * .36, playerScreenX, playerScreenY, radius);
+    blackout.addColorStop(0, "rgba(1,3,3,0)");
+    blackout.addColorStop(.58, "rgba(1,3,3,.16)");
+    blackout.addColorStop(1, "rgba(1,3,3,.94)");
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(128, 0, 512, HEIGHT);
+    ctx.clip();
+    ctx.fillStyle = blackout;
+    ctx.fillRect(128, 0, 512, HEIGHT);
+    ctx.restore();
+  }
+
   // The side bands are literal unknown space: only the occupied room is broadcast.
   const shade = ctx.createLinearGradient(0, 0, 128, 0);
   shade.addColorStop(0, "#020303");
@@ -2876,6 +2983,7 @@ function updateGame(game: Game, keys: Set<string>, dt: number, controlMode: Cont
   const roomId = String(currentRoomIndex);
   if (!game.explored.has(roomId)) {
     game.explored.add(roomId);
+    game.routeTaken.push(currentRoomKind);
     game.score += 120;
     addHype(game, 3);
     if (currentRoomKind === "boss" && (game.bossEngaged || game.bossIntroTime > 0)) {
@@ -3467,6 +3575,11 @@ export default function Home() {
   const [helpSection, setHelpSection] = useState<HelpSection>("mission");
   const [armoryOpen, setArmoryOpen] = useState(false);
   const [armory, setArmory] = useState<ArmorySnapshot>(EMPTY_ARMORY);
+  const [metaProfile, setMetaProfile] = useState<MetaProgressionProfile>(() => parseMetaProgressionProfile(null));
+  const [archiveProfile, setArchiveProfile] = useState<ArchiveDiscoveryProfile>(() => parseArchiveProfile(null));
+  const [archiveCategory, setArchiveCategory] = useState<ArchiveCategoryId>("enemies");
+  const [challengeProgress, setChallengeProgress] = useState<ChallengeProgress>({});
+  const [selectedChallengeIds, setSelectedChallengeIds] = useState<ChallengeModifierId[]>([]);
   const [starterWeapon, setStarterWeapon] = useState<WeaponId>("cleaver");
   const [selectedClass, setSelectedClass] = useState<PlayerClassId>("knight");
   const [selectedContract, setSelectedContract] = useState<BroadcastContractId>("redline");
@@ -3507,6 +3620,8 @@ export default function Home() {
       const stats = runStatsFor(game);
       const summary = summarizeRun(stats);
       game.score = Math.max(game.score, summary.score);
+      const endedAt = new Date().toISOString();
+      const runId = `${game.runMode}:${game.dailyKey ?? game.floorSeed}:${endedAt}`;
       const lifetimeRuns = storedNumber(localStorage.getItem("signal-depths-lifetime-runs")) + 1;
       const lifetimeKills = storedNumber(localStorage.getItem("signal-depths-lifetime-kills")) + game.kills;
       const storedUnlocks = parseStoredArray(localStorage.getItem("signal-depths-unlocks"), [], (value): value is string =>
@@ -3530,12 +3645,11 @@ export default function Home() {
       localStorage.setItem("signal-depths-discovered-weapons", JSON.stringify(merge(storedWeapons, [game.player.weaponId])));
       localStorage.setItem("signal-depths-discovered-equipment", JSON.stringify(merge(storedEquipment, game.discoveredEquipment)));
       localStorage.setItem("signal-depths-discovered-enemies", JSON.stringify(merge(storedEnemies, game.discoveredEnemies)));
-      const endedAt = new Date().toISOString();
       const boss = game.floorNumber === 2
         ? "Ninja Master"
         : game.floorSeed % 2 === 0 ? "Broadcast Warden" : "Static Conductor";
       const historyEntry: RunHistoryEntry = {
-        id: `${game.runMode}:${game.dailyKey ?? game.floorSeed}:${endedAt}`,
+        id: runId,
         endedAt,
         mode: game.runMode,
         ...(game.dailyKey ? { dailyKey: game.dailyKey } : {}),
@@ -3556,6 +3670,47 @@ export default function Home() {
       }
       setRunHistory(history);
       setArmory({ weapons: merge(storedWeapons, [game.player.weaponId]), equipment: merge(storedEquipment, game.discoveredEquipment), enemies: merge(storedEnemies, game.discoveredEnemies), unlocks: merge(storedUnlocks, earned.map((unlock) => unlock.id)), runs: lifetimeRuns, kills: lifetimeKills });
+
+      const storedMeta = parseMetaProgressionProfile(localStorage.getItem(META_PROGRESSION_STORAGE_KEY));
+      const metaUpdate = updateMetaProgressionAfterRun(storedMeta, runId, summary);
+      const boostedFragmentReward = applyChallengeReward(metaUpdate.reward.total, challengeFragmentMultiplier(game.challengeIds));
+      const fragmentBonus = Math.max(0, boostedFragmentReward - metaUpdate.reward.total);
+      const nextMeta = metaUpdate.applied ? {
+        ...metaUpdate.profile,
+        signalFragments: metaUpdate.profile.signalFragments + fragmentBonus,
+        lifetimeFragmentsEarned: metaUpdate.profile.lifetimeFragmentsEarned + fragmentBonus,
+      } : metaUpdate.profile;
+      game.fragmentReward = metaUpdate.applied ? boostedFragmentReward : 0;
+      localStorage.setItem(META_PROGRESSION_STORAGE_KEY, JSON.stringify(nextMeta));
+      setMetaProfile(nextMeta);
+
+      const bossId = boss === "Ninja Master" ? "ninja-master" : boss === "Static Conductor" ? "static-conductor" : "broadcast-warden";
+      const storedArchive = parseArchiveProfile(localStorage.getItem(ARCHIVE_STORAGE_KEY));
+      const archiveUpdate = mergeCompletedRunDiscoveries(storedArchive, {
+        enemies: game.discoveredEnemies,
+        weapons: game.player.classId === "knight" ? [game.player.weaponId] : [],
+        classArsenals: game.player.classId === "knight" ? [] : [game.player.classArsenalId],
+        curses: game.cursedItemId ? [game.cursedItemId] : [],
+        bosses: game.bossDead ? [bossId] : [],
+        ending: game.screen === "won" ? "escaped" : game.time <= 0 ? "window-closed" : "subject-offline",
+        secretsFound: game.secretsFound,
+        lore: game.floorNumber >= 2 ? ["shadow-carrier"] : [],
+      });
+      game.newDiscoveries = archiveDiscoveryCallouts(archiveUpdate.newIds).map((callout) => callout.title);
+      localStorage.setItem(ARCHIVE_STORAGE_KEY, JSON.stringify(archiveUpdate.profile));
+      setArchiveProfile(archiveUpdate.profile);
+
+      const storedChallengeProgress = parseChallengeProgress(localStorage.getItem(CHALLENGE_PROGRESS_STORAGE_KEY));
+      const nextChallengeProgress: ChallengeProgress = {
+        lifetimeRuns,
+        lifetimeKills,
+        bossesDefeated: (storedChallengeProgress.bossesDefeated ?? 0) + stats.bossesDefeated,
+        highestHype: Math.max(storedChallengeProgress.highestHype ?? 0, stats.highestHype),
+        secretsFound: (storedChallengeProgress.secretsFound ?? 0) + stats.secretsFound,
+        daresCompleted: (storedChallengeProgress.daresCompleted ?? 0) + stats.daresCompleted,
+      };
+      localStorage.setItem(CHALLENGE_PROGRESS_STORAGE_KEY, JSON.stringify(nextChallengeProgress));
+      setChallengeProgress(nextChallengeProgress);
       game.resultsSaved = true;
     }
     setScreen(game.screen);
@@ -3602,9 +3757,12 @@ export default function Home() {
   const startGame = useCallback(() => {
     const dateKey = selectedRunMode === "daily" ? localDateKey() : null;
     const seed = dateKey ? dailySeed(dateKey) : Math.floor(Math.random() * 1_000_000_000);
-    const nextGame = makeGame("playing", seed, selectedClass, selectedContract, 1, selectedRunMode, dateKey);
-    nextGame.player.weaponId = starterWeapon;
-    nextGame.player.ammo = getWeapon(starterWeapon).ammo ?? 0;
+    const selectedKitId = metaProfile.selectedKitId && getStarterKit(metaProfile.selectedKitId).classId === selectedClass ? metaProfile.selectedKitId : null;
+    const nextGame = makeGame("playing", seed, selectedClass, selectedContract, 1, selectedRunMode, dateKey, selectedKitId, selectedChallengeIds);
+    if (!selectedKitId && selectedClass === "knight") {
+      nextGame.player.weaponId = starterWeapon;
+      nextGame.player.ammo = getWeapon(starterWeapon).ammo ?? 0;
+    }
     nextGame.testerMode = testerModeRef.current;
     if (nextGame.testerMode) applyTesterLoadout(nextGame);
     gameRef.current = nextGame;
@@ -3616,13 +3774,58 @@ export default function Home() {
     localStorage.setItem("signal-depths-player-class", selectedClass);
     localStorage.setItem("signal-depths-broadcast-contract", selectedContract);
     localStorage.setItem("signal-depths-run-mode", selectedRunMode);
-  }, [beep, selectedClass, selectedContract, selectedRunMode, starterWeapon]);
+  }, [beep, metaProfile.selectedKitId, selectedChallengeIds, selectedClass, selectedContract, selectedRunMode, starterWeapon]);
 
   const openClassSelection = useCallback(() => {
     gameRef.current.screen = "class-select";
     setScreen("class-select");
     beep(360, .08);
   }, [beep]);
+
+  const buyStarterKit = useCallback((kitId: StarterKitId) => {
+    setMetaProfile((current) => {
+      const result = purchaseStarterKit(current, kitId);
+      if (result.changed) {
+        localStorage.setItem(META_PROGRESSION_STORAGE_KEY, JSON.stringify(result.profile));
+        beep(820, .14);
+      } else beep(92, .08);
+      return result.profile;
+    });
+  }, [beep]);
+
+  const chooseStarterKit = useCallback((kitId: StarterKitId | null) => {
+    setMetaProfile((current) => {
+      const result = selectStarterKit(current, kitId);
+      if (result.changed) {
+        localStorage.setItem(META_PROGRESSION_STORAGE_KEY, JSON.stringify(result.profile));
+        beep(610, .09);
+      }
+      return result.profile;
+    });
+  }, [beep]);
+
+  const toggleChallenge = useCallback((challengeId: ChallengeModifierId) => {
+    setSelectedChallengeIds((current) => {
+      const next = current.includes(challengeId) ? current.filter((id) => id !== challengeId) : [...current, challengeId];
+      const validation = validateChallengeSelection(next, challengeProgress);
+      if (!validation.valid) {
+        beep(82, .08);
+        return current;
+      }
+      localStorage.setItem(SELECTED_CHALLENGES_STORAGE_KEY, JSON.stringify(next));
+      beep(next.includes(challengeId) ? 690 : 260, .08);
+      return next;
+    });
+  }, [beep, challengeProgress]);
+
+  const closeArchive = useCallback(() => {
+    setArchiveProfile((current) => {
+      const next = acknowledgeArchiveDiscoveries(current);
+      localStorage.setItem(ARCHIVE_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+    setArmoryOpen(false);
+  }, []);
 
   const openHelp = useCallback(() => {
     const game = gameRef.current;
@@ -3927,15 +4130,15 @@ export default function Home() {
     if (game.screen !== "playing") return;
     if (kind === "tonic") {
       if ((!game.testerMode && p.potions <= 0) || p.hp >= p.maxHp) return;
-      if (audienceModifierFor(game)?.disableHealing) {
-        setMessage(game, "AUDIENCE RULE // HEALING BLOCKED UNTIL THE VOTE EXPIRES");
+      if (audienceModifierFor(game)?.disableHealing || challengeEffectsFor(game).disableHealing) {
+        setMessage(game, challengeEffectsFor(game).disableHealing ? "CHALLENGE RULE // HEALING DISABLED FOR THIS RUN" : "AUDIENCE RULE // HEALING BLOCKED UNTIL THE VOTE EXPIRES");
         beep(82, .08);
         return;
       }
       if (!game.testerMode) p.potions--;
-      healPlayer(game, 45);
+      const restored = healPlayer(game, 45);
       burst(game, p.x, p.y, "#34d399", 14, 75);
-      setMessage(game, "[1] VITAL TONIC // +45 HEALTH");
+      setMessage(game, `[1] VITAL TONIC // +${Math.round(restored)} HEALTH`);
       beep(520, 0.12);
       return;
     }
@@ -3989,6 +4192,11 @@ export default function Home() {
     if (game.screen !== "playing") return;
     const cursedDrop = game.groundCursedItems.find((drop) => dist(drop, p) < 42);
     if (cursedDrop) {
+      if (challengeEffectsFor(game).lockCursedItem && game.cursedItemId) {
+        setMessage(game, "CURSED CONTRACT // RELIC LOCKED FOR THIS RUN");
+        beep(82, .08);
+        return;
+      }
       const item = getCursedItem(cursedDrop.cursedItemId);
       if (!item) return;
       const previous = carryCursedItem(game, cursedDrop.cursedItemId);
@@ -4158,6 +4366,31 @@ export default function Home() {
       kills: storedNumber(localStorage.getItem("signal-depths-lifetime-kills")),
     };
     setArmory(snapshot);
+    const savedMeta = parseMetaProgressionProfile(localStorage.getItem(META_PROGRESSION_STORAGE_KEY));
+    setMetaProfile(savedMeta);
+    const savedArchive = parseArchiveProfile(localStorage.getItem(ARCHIVE_STORAGE_KEY));
+    const migratedArchive = mergeCompletedRunDiscoveries(savedArchive, {
+      enemies: snapshot.enemies,
+      weapons: snapshot.weapons,
+      classArsenals: ["signal-grimoire", "relay-recurve"],
+    }).profile;
+    setArchiveProfile(migratedArchive);
+    localStorage.setItem(ARCHIVE_STORAGE_KEY, JSON.stringify(migratedArchive));
+    const savedChallengeProgress = parseChallengeProgress(localStorage.getItem(CHALLENGE_PROGRESS_STORAGE_KEY));
+    const hydratedChallengeProgress = {
+      ...savedChallengeProgress,
+      lifetimeRuns: Math.max(savedChallengeProgress.lifetimeRuns ?? 0, snapshot.runs),
+      lifetimeKills: Math.max(savedChallengeProgress.lifetimeKills ?? 0, snapshot.kills),
+    };
+    setChallengeProgress(hydratedChallengeProgress);
+    const savedChallenges = parseStoredArray(localStorage.getItem(SELECTED_CHALLENGES_STORAGE_KEY), [], (value): value is ChallengeModifierId =>
+      typeof value === "string" && CHALLENGE_MODIFIERS.some((modifier) => modifier.id === value)
+    );
+    const validChallenges = savedChallenges.reduce<ChallengeModifierId[]>((selected, id) => {
+      const candidate = [...selected, id];
+      return validateChallengeSelection(candidate, hydratedChallengeProgress).valid ? candidate : selected;
+    }, []);
+    setSelectedChallengeIds(validChallenges);
     const savedStarter = localStorage.getItem("signal-depths-starter-weapon") as WeaponId | null;
     const allowedStarters: WeaponId[] = ["cleaver", ...(snapshot.unlocks.includes("weapon_spear") ? ["spear" as WeaponId] : []), ...(snapshot.unlocks.includes("weapon_hammer") ? ["hammer" as WeaponId] : [])];
     if (savedStarter && allowedStarters.includes(savedStarter)) setStarterWeapon(savedStarter);
@@ -4213,7 +4446,7 @@ export default function Home() {
       if (["arrowup", "arrowdown", "arrowleft", "arrowright", " "].includes(key)) event.preventDefault();
       if (!event.repeat) {
         if (armoryOpen) {
-          if (key === "escape") setArmoryOpen(false);
+          if (key === "escape") closeArchive();
           return;
         }
         if (key === "?" || key === "h") {
@@ -4271,7 +4504,7 @@ export default function Home() {
       window.removeEventListener("keyup", onUp);
       if (interactHoldTimer.current) clearTimeout(interactHoldTimer.current);
     };
-  }, [activateItem, armoryOpen, attack, closeHelp, dodge, drinkPotion, heavyAttack, helpOpen, interact, openHelp, syncScreen]);
+  }, [activateItem, armoryOpen, attack, closeArchive, closeHelp, dodge, drinkPotion, heavyAttack, helpOpen, interact, openHelp, syncScreen]);
 
   useEffect(() => {
     let frame = 0;
@@ -4299,6 +4532,8 @@ export default function Home() {
 
   const currentGame = gameRef.current;
   const runSummary = summarizeRun(runStatsFor(currentGame));
+  const baseFragmentReward = calculateSignalFragmentReward(runSummary);
+  const displayedFragmentReward = currentGame.fragmentReward || applyChallengeReward(baseFragmentReward.total, challengeFragmentMultiplier(currentGame.challengeIds));
   const activeDare = AUDIENCE_DARES.find((dare) => dare.id === currentGame.activeDareId) ?? AUDIENCE_DARES[0];
   const activeAudienceModifier = audienceModifierFor(currentGame);
   const damageBreakdown = Object.entries(currentGame.damageBySource).sort((a, b) => b[1] - a[1]).slice(0, 3);
@@ -4378,7 +4613,8 @@ export default function Home() {
                 <p>THE FLOOR IS LISTENING</p>
                 <h2>SURVIVE THE FEED.<br />STEAL THE SIGNAL.</h2>
                 <p className="intro-copy">Twelve unknown rooms. Three signal pylons. One audience waiting for a spectacular escape.</p>
-                <div className="title-actions"><button onClick={openClassSelection}>ENTER THE DEPTHS</button><button className="secondary" onClick={() => setArmoryOpen(true)}>OPEN ARMORY</button></div>
+                <div className="title-actions"><button onClick={openClassSelection}>ENTER THE DEPTHS</button><button className="secondary" onClick={() => setArmoryOpen(true)}>SIGNAL ARCHIVE{unacknowledgedArchiveIds(archiveProfile).length > 0 ? ` · ${unacknowledgedArchiveIds(archiveProfile).length} NEW` : ""}</button></div>
+                <small>{metaProfile.signalFragments} SIGNAL FRAGMENTS AVAILABLE</small>
                 {highScore > 0 && <small>LOCAL RECORD // {highScore.toLocaleString()}</small>}
               </div>
             )}
@@ -4410,6 +4646,25 @@ export default function Home() {
                   {(Object.values(BROADCAST_CONTRACTS) as BroadcastContract[]).map((contract) => <button key={contract.id} role="radio" aria-checked={selectedContract === contract.id} className={`contract-choice ${selectedContract === contract.id ? "selected" : ""}`} onClick={() => setSelectedContract(contract.id)}>
                     <span>{contract.name}</span><strong>{contract.tagline}</strong><small className="contract-risk">RISK // {contract.risk}</small><small className="contract-reward">PAYOUT // {contract.reward}</small>
                   </button>)}
+                </div>
+                <div className="kit-challenge-row">
+                  <div className="selected-kit-card">
+                    <span>STARTING KIT</span>
+                    {(() => {
+                      const kit = STARTER_KITS.find((entry) => entry.classId === selectedClass)!;
+                      const unlocked = metaProfile.unlockedKitIds.includes(kit.id);
+                      const selected = metaProfile.selectedKitId === kit.id;
+                      return <button disabled={!unlocked} className={selected ? "selected" : ""} onClick={() => chooseStarterKit(selected ? null : kit.id)}><b>{unlocked ? kit.name : "STANDARD ISSUE"}</b><small>{unlocked ? selected ? "ACTIVE // CLICK FOR STANDARD ISSUE" : kit.description : `Unlock ${kit.name} in the Signal Archive · ${kit.cost} fragments`}</small></button>;
+                    })()}
+                  </div>
+                  <div className="challenge-summary"><span>CHALLENGE STACK</span><b>{selectedChallengeIds.length}/3 ACTIVE</b><small>×{challengeScoreMultiplier(selectedChallengeIds).toFixed(2)} score · ×{challengeFragmentMultiplier(selectedChallengeIds).toFixed(2)} fragments</small></div>
+                </div>
+                <div className="challenge-select-grid" aria-label="Challenge modifiers">
+                  {CHALLENGE_MODIFIERS.map((challenge) => {
+                    const unlocked = isChallengeUnlocked(challenge, challengeProgress);
+                    const selected = selectedChallengeIds.includes(challenge.id);
+                    return <button key={challenge.id} disabled={!unlocked} aria-pressed={selected} className={`${selected ? "selected" : ""} ${unlocked ? "" : "locked"}`} onClick={() => toggleChallenge(challenge.id)}><span>{challenge.name}</span><small>{unlocked ? challenge.risk : "unlock" in challenge ? challenge.unlock.label : "LOCKED"}</small><em>+{Math.round((challenge.scoreMultiplier - 1) * 100)}% SCORE</em></button>;
+                  })}
                 </div>
                 <div className="class-actions"><button className="secondary" onClick={() => { gameRef.current.screen = "title"; setScreen("title"); }}>BACK</button><button onClick={startGame}>DESCEND AS {PLAYER_CLASSES[selectedClass].name.toUpperCase()}</button></div>
               </div>
@@ -4464,8 +4719,12 @@ export default function Home() {
                 <div className="result-breakdown">
                   <div><span>DAMAGE REPORT</span>{damageBreakdown.length ? damageBreakdown.map(([source, amount]) => <p key={source}><b>{source}</b><em>{Math.round(amount)}</em></p>) : <p><b>Untouched</b><em>0</em></p>}</div>
                   <div><span>COMBAT READOUT</span><p><b>{currentGame.player.classId === "knight" ? (mostUsedWeapon?.[1] ? getWeapon(mostUsedWeapon[0]).name : "No weapon used") : CLASS_ARSENAL[currentGame.player.classArsenalId].name}</b><em>{currentGame.player.classId === "knight" ? `${mostUsedWeapon?.[1] ?? 0} ATK` : PLAYER_CLASSES[currentGame.player.classId].role.split(" // ")[0]}</em></p>{currentGame.player.classId === "knight" && <p><b>Hits per attack</b><em>{hitsPerAttack}</em></p>}{screen === "lost" && <p><b>Signal lost in</b><em>{currentGame.deathRoomKind?.toUpperCase() ?? (currentGame.time <= 0 ? "TIMEOUT" : "UNKNOWN")}</em></p>}</div>
+                  <div><span>ROUTE TAKEN</span><p className="route-trace"><b>{currentGame.routeTaken.map((kind) => kind.toUpperCase()).join(" → ")}</b></p></div>
+                  <div><span>SIGNAL FRAGMENTS</span><p><b>Base transmission</b><em>+{baseFragmentReward.total}</em></p><p><b>Challenge stack</b><em>×{challengeFragmentMultiplier(currentGame.challengeIds).toFixed(2)}</em></p><p className="fragment-total"><b>Archive payout</b><em>+{displayedFragmentReward}</em></p></div>
                 </div>
+                {runSummary.highlights.length > 0 && <p className="result-highlights">HIGHLIGHTS // {runSummary.highlights.join(" · ")}</p>}
                 {currentGame.newUnlocks.length > 0 && <p className="unlock-line">UNLOCKED // {currentGame.newUnlocks.join(" + ")}</p>}
+                {currentGame.newDiscoveries.length > 0 && <div className="discovery-callouts"><span>NEW SIGNALS ARCHIVED</span>{currentGame.newDiscoveries.slice(0, 5).map((name) => <b key={name}>{name}</b>)}</div>}
                 <button onClick={openClassSelection}>CHOOSE NEXT CRAWLER</button>
               </div>
             )}
@@ -4525,20 +4784,57 @@ export default function Home() {
           onClose={closeHelp}
         />
       )}
-      {armoryOpen && <ArmoryModal snapshot={armory} history={runHistory} starterWeapon={starterWeapon} onStarterChange={(weapon) => { setStarterWeapon(weapon); localStorage.setItem("signal-depths-starter-weapon", weapon); }} onClose={() => setArmoryOpen(false)} />}
+      {armoryOpen && <ArmoryModal
+        snapshot={armory}
+        history={runHistory}
+        starterWeapon={starterWeapon}
+        metaProfile={metaProfile}
+        archiveProfile={archiveProfile}
+        archiveCategory={archiveCategory}
+        onArchiveCategoryChange={setArchiveCategory}
+        onBuyKit={buyStarterKit}
+        onSelectKit={chooseStarterKit}
+        onStarterChange={(weapon) => { setStarterWeapon(weapon); localStorage.setItem("signal-depths-starter-weapon", weapon); }}
+        onClose={closeArchive}
+      />}
       <footer><span>AN ORIGINAL ARCADE DESCENT</span><span>ESC // PAUSE</span><span>LOCAL SAVE ENABLED</span></footer>
     </main>
   );
 }
 
-function ArmoryModal({ snapshot, history, starterWeapon, onStarterChange, onClose }: { snapshot: ArmorySnapshot; history: readonly RunHistoryEntry[]; starterWeapon: WeaponId; onStarterChange: (weapon: WeaponId) => void; onClose: () => void }) {
+function ArmoryModal({ snapshot, history, starterWeapon, metaProfile, archiveProfile, archiveCategory, onArchiveCategoryChange, onBuyKit, onSelectKit, onStarterChange, onClose }: {
+  snapshot: ArmorySnapshot;
+  history: readonly RunHistoryEntry[];
+  starterWeapon: WeaponId;
+  metaProfile: MetaProgressionProfile;
+  archiveProfile: ArchiveDiscoveryProfile;
+  archiveCategory: ArchiveCategoryId;
+  onArchiveCategoryChange: (category: ArchiveCategoryId) => void;
+  onBuyKit: (kitId: StarterKitId) => void;
+  onSelectKit: (kitId: StarterKitId | null) => void;
+  onStarterChange: (weapon: WeaponId) => void;
+  onClose: () => void;
+}) {
   const starterUnlock: Partial<Record<WeaponId, string>> = { spear: "weapon_spear", hammer: "weapon_hammer" };
+  const archiveProgress = archiveCategoryProgress(archiveProfile);
+  const discoveredTotal = archiveProgress.reduce((total, entry) => total + entry.discovered, 0);
   return (
     <div className="help-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="help-dialog armory-dialog" role="dialog" aria-modal="true" aria-labelledby="armory-title">
-        <header className="help-header"><div><span>PERSISTENT COLLECTION // LOCAL SAVE</span><h2 id="armory-title">THE ARMORY</h2></div><button className="help-close" onClick={onClose} aria-label="Close Armory">×</button></header>
-        <div className="armory-summary"><p><b>{snapshot.runs}</b> RUNS</p><p><b>{snapshot.kills}</b> KILLS</p><p><b>{snapshot.weapons.length}/{Object.keys(WEAPONS).length}</b> WEAPONS</p><p><b>{snapshot.equipment.length}/{EQUIPMENT_IDS.length}</b> GEAR</p></div>
+        <header className="help-header"><div><span>PERSISTENT COLLECTION // LOCAL SAVE</span><h2 id="armory-title">THE SIGNAL ARCHIVE</h2></div><button className="help-close" onClick={onClose} aria-label="Close Signal Archive">×</button></header>
+        <div className="armory-summary"><p><b>{metaProfile.signalFragments}</b> FRAGMENTS</p><p><b>{discoveredTotal}/{ARCHIVE_ENTRIES.length}</b> SIGNALS</p><p><b>{snapshot.runs}</b> RUNS</p><p><b>{metaProfile.unlockedKitIds.length}/{STARTER_KITS.length}</b> KITS</p></div>
         <div className="armory-scroll">
+          <section className="starter-kit-archive"><span className="guide-kicker">UNLOCKABLE STARTING KITS</span><h3>Spend fragments on sidegrades for future runs.</h3><div className="starter-kit-grid">
+            {STARTER_KITS.map((kit) => {
+              const unlocked = metaProfile.unlockedKitIds.includes(kit.id);
+              const selected = metaProfile.selectedKitId === kit.id;
+              return <article key={kit.id} className={selected ? "selected" : ""}><span>{PLAYER_CLASSES[kit.classId].name.toUpperCase()}{" // "}{kit.cost} FRAGMENTS</span><h4>{kit.name}</h4><p>{kit.description}</p><small>TRADEOFF{" // "}{kit.tradeoff}</small>{unlocked ? <button className={selected ? "selected" : ""} onClick={() => onSelectKit(selected ? null : kit.id)}>{selected ? "ACTIVE // USE STANDARD ISSUE" : "SELECT KIT"}</button> : <button disabled={metaProfile.signalFragments < kit.cost} onClick={() => onBuyKit(kit.id)}>{metaProfile.signalFragments >= kit.cost ? `UNLOCK FOR ${kit.cost}` : `NEED ${kit.cost - metaProfile.signalFragments} MORE`}</button>}</article>;
+            })}
+          </div></section>
+          <section className="signal-catalog"><span className="guide-kicker">ARCHIVE COMPENDIUM</span><h3>Unknown signals remain corrupted until encountered.</h3>
+            <nav className="archive-category-tabs" aria-label="Archive categories">{ARCHIVE_CATEGORIES.map((category) => { const progress = archiveProgress.find((entry) => entry.category === category.id)!; return <button key={category.id} className={archiveCategory === category.id ? "active" : ""} onClick={() => onArchiveCategoryChange(category.id)}><b>{category.name}</b><small>{progress.discovered}/{progress.total}</small></button>; })}</nav>
+            <div className="archive-entry-grid">{ARCHIVE_ENTRIES.filter((entry) => entry.category === archiveCategory).map((entry) => { const view = archivePresentation(entry, archiveProfile); return <article key={entry.id} className={view.discovered ? "decoded" : view.state}><i>{view.glyph}</i><div><span>{view.discovered ? "DECODED" : view.state.toUpperCase()}</span><h4>{view.name}</h4><p>{view.summary}</p>{view.detail && <small>{view.detail}</small>}</div></article>; })}</div>
+          </section>
           <section className="run-history"><span className="guide-kicker">RECENT TRANSMISSIONS</span><h3>Run history saved on this device.</h3>
             {history.length > 0 ? <div className="run-history-list">{history.map((entry) => <article key={entry.id}>
               <b className={`history-grade grade-${entry.grade.toLowerCase()}`}>{entry.grade}</b>
@@ -4557,7 +4853,7 @@ function ArmoryModal({ snapshot, history, starterWeapon, onStarterChange, onClos
           <section><span className="guide-kicker">EQUIPMENT ARCHIVE</span><h3>Four slots. Twelve build-changing perks.</h3><div className="armory-grid gear-collection">{EQUIPMENT_IDS.map((id) => { const item = EQUIPMENT[id]; const found = snapshot.equipment.includes(id); return <article key={id} className={`collection-card gear ${found ? item.rarity : "locked"}`}><EquipmentArt item={id} /><div><span>{found ? `${item.rarity} // ${item.slot}` : "UNKNOWN SIGNAL"}</span><h4>{found ? item.name : "UNDISCOVERED"}</h4><p>{found ? `${item.perk}: ${item.detail}` : "Open caches and clear dangerous encounters to find it."}</p></div></article>; })}</div></section>
           <section><span className="guide-kicker">THREAT ARCHIVE</span><h3>Enemies logged across every broadcast.</h3><div className="armory-grid enemy-collection">{ENEMY_GUIDE.map((enemy) => { const found = snapshot.enemies.includes(enemy.kind); return <article key={enemy.kind} className={`collection-card ${found ? "" : "locked"}`}><GuideEnemyArt kind={enemy.kind} /><div><span>{found ? enemy.role : "NO SIGNAL"}</span><h4>{found ? enemy.name : "UNIDENTIFIED"}</h4><p>{found ? enemy.tip : "Encounter this threat to record its field data."}</p></div></article>; })}</div></section>
         </div>
-        <footer className="help-footer"><span>DISCOVERIES AND STARTER CHOICES SAVE ON THIS DEVICE</span><button onClick={onClose}>RETURN TO THE FEED</button></footer>
+        <footer className="help-footer"><span>FRAGMENTS, DISCOVERIES, AND STARTING KITS SAVE ON THIS DEVICE</span><button onClick={onClose}>RETURN TO THE FEED</button></footer>
       </section>
     </div>
   );
